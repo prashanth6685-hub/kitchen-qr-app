@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { row, all, run } from './db.js';
@@ -110,19 +109,15 @@ app.use('/api/orders', ordersRouter);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
-// ---------- Serve the built client (PWA) ----------
-const clientDist = join(__dirname, '..', '..', 'client', 'dist');
-if (existsSync(clientDist)) {
-  app.use(express.static(clientDist));
-  // SPA fallback — but never swallow /api routes.
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/')) return next();
-    res.sendFile(join(clientDist, 'index.html'));
-  });
-  console.log('[server] serving client from', clientDist);
-} else {
-  console.warn('[server] client not built — run the client build to serve the UI');
-}
+// ---------- Serve the client (PWA, zero build step) ----------
+const clientDir = join(__dirname, '..', '..', 'client');
+app.use(express.static(clientDir));
+// SPA fallback — but never swallow /api routes.
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/')) return next();
+  res.sendFile(join(clientDir, 'index.html'));
+});
+console.log('[server] serving client from', clientDir);
 
 app.listen(PORT, () => {
   console.log(`[server] Kitchen QR app listening on http://localhost:${PORT}`);
