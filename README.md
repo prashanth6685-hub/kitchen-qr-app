@@ -1,8 +1,68 @@
 # Kitchen QR — Counter Ordering & Notification App
 
-A web app for food/kitchen counters: staff create orders and take payment, the
-customer scans a QR code, and gets live order-status updates with Web Push
-notifications. No customer app install, no customer login.
+A web app for food/kitchen counters. Staff create orders and take payment, the
+customer scans a QR code, and gets **live order-status updates with push
+notifications** — no customer app install, no customer login.
+
+**How it works:** Counter staff create an order → take payment → a QR code is
+generated **only after payment is confirmed** → customer scans it with their
+phone camera → live tracking page with push notifications on every status
+change → kitchen staff move the order RECEIVED → PREPARING → READY → COMPLETED.
+
+## Languages & technologies
+
+| Language / Technology | Used for | Short note |
+|---|---|---|
+| **TypeScript** | Entire codebase (frontend + backend) | One language everywhere; catches bugs at compile time before they reach the counter |
+| **Node.js 22+** | Backend runtime | Runs the API server; v22+ includes built-in SQLite so no native database drivers are needed |
+| **Express** | HTTP server & REST API | Lightweight framework handling all routes: auth, orders, payments, push, QR |
+| **node:sqlite** | Database | Embedded SQL database built into Node — zero setup, the whole DB is one file (`kitchen.db`) |
+| **React 18** | User interface | Component-based UI for the staff dashboard, kitchen display, and customer tracking page |
+| **React Router** | Page navigation | Client-side routing between login, staff, kitchen, and customer pages without reloads |
+| **Vite** | Frontend build tool | Fast dev server and optimized production bundle for the React app |
+| **PWA** (service worker + manifest) | Installable app | Staff/customers can "Add to Home Screen" on iPhone and get an app-like experience |
+| **Web Push (VAPID)** | Customer notifications | Sends "Your order is ready!" push notifications even when the browser is closed; `web-push` library on the server |
+| **Server-Sent Events (SSE)** | Live updates | One-way realtime stream — the customer's tracking page updates the instant kitchen changes a status |
+| **JSON Web Tokens (JWT)** | Staff login sessions | Signed tokens prove who staff are on every request; roles (admin/counter/kitchen) enforced server-side |
+| **bcryptjs** | Password hashing | Staff passwords are never stored in plain text |
+| **Stripe** | Real card payments | Checkout + signature-verified webhook; payment counts **only** when Stripe's webhook confirms it — never from the browser |
+| **qrcode** | QR code generation | Generates the scannable PNG that links the customer to their order's secure tracking page |
+| **tsx** | Running TypeScript | Runs the backend directly from `.ts` source — no separate compile step in development |
+| **dotenv** | Configuration | Loads secrets and settings (Stripe keys, push keys, DB path) from `server/.env` |
+| **Python** | Smoke tests | `scripts/smoke-test.py` runs 28 end-to-end API checks (auth, payment gating, status rules, privacy) |
+
+## Architecture
+
+```
+Customer phone                Counter staff              Kitchen display
+     │                              │                              │
+     │  scan QR                     │  create order + payment      │  update status
+     ▼                              ▼                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Express API (Node + TypeScript)    │  React PWA (TypeScript)           │
+│  • JWT auth + role checks          │  • /staff   counter dashboard      │
+│  • Payment choke point: QR only    │  • /kitchen big-card display       │
+│    after webhook-confirmed payment │  • /order/:token customer tracker │
+│  • SSE live streams                │  • push subscribe + offline shell │
+│  • node:sqlite (one file DB)       │                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+     │                              │
+     ▼                              ▼
+ Stripe webhook ──► confirmed    Web Push (VAPID) ──► customer's phone
+```
+
+## Key guarantees (by design)
+
+- **QR codes are payment-gated.** The QR endpoint returns `409` until the
+  order is `PAID`. No payment, no valid QR — enforced in the backend, not the UI.
+- **Payments are webhook-confirmed.** A "payment successful" message from the
+  browser is never trusted; only Stripe's signature-verified webhook (or a
+  recorded cash payment) marks an order paid.
+- **Statuses are role-checked.** Kitchen staff can't cancel orders, counter
+  staff can't run the kitchen pipeline, and illegal jumps (e.g. straight to
+  READY) are rejected.
+- **Customer privacy.** The public tracking page exposes no phone numbers —
+  access is via an unguessable per-order token.
 
 ## Quick start
 
@@ -30,8 +90,8 @@ Or manually: `cd server && npm start` (serves the API **and** the built client).
 | counter   | counter123  | COUNTER_STAFF |
 | kitchen   | kitchen123  | KITCHEN_STAFF |
 
-Change these in production. Roles: admins do everything; counter staff create
-orders and take payments; kitchen staff move orders through
+Change these in production. Admins do everything; counter staff create orders
+and take payments; kitchen staff move orders through
 RECEIVED → PREPARING → READY → COMPLETED.
 
 ## The flow
@@ -69,6 +129,33 @@ RECEIVED → PREPARING → READY → COMPLETED.
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web Push keys (auto-generated by seed) |
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | Real card payments (optional) |
 | `DEMO_PAYMENTS`       | `true` enables the test-only demo payment button     |
+
+## Project structure
+
+```
+kitchen-qr-app/
+├── start.sh                  # one-command launcher
+├── server/
+│   └── src/
+│       ├── server.ts         # Express app: routes + static client serving
+│       ├── schema.sql        # organizations → locations → counters → orders…
+│       ├── db.ts             # SQLite connection + migrations
+│       ├── auth.ts           # JWT login, roles, ?token= for SSE/QR
+│       ├── orders.ts         # order CRUD, transition + role validation
+│       ├── payments.ts       # Stripe/cash/demo; the payment choke point
+│       ├── push.ts           # Web Push (VAPID) subscriptions + sending
+│       ├── sse.ts            # live event streams (staff + customer)
+│       ├── qr.ts             # QR PNG generation (409 before payment)
+│       └── seed.ts           # demo users, menu, keys
+├── client/
+│   └── src/
+│       ├── pages/            # Login, StaffDashboard, NewOrder,
+│       │                     # StaffOrderDetail, KitchenDisplay, CustomerOrder
+│       ├── lib/api.ts        # typed API client
+│       └── lib/push.ts       # push subscription logic
+├── scripts/smoke-test.py     # 28 end-to-end API checks
+└── docs/                     # screenshots
+```
 
 ## API overview
 
