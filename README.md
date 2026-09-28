@@ -17,8 +17,9 @@ change → kitchen staff move the order RECEIVED → PREPARING → READY → COM
 | **Node.js 22+** | Backend runtime | Runs the API server; v22+ includes built-in SQLite so no native database drivers are needed |
 | **Express** | HTTP server & REST API | Lightweight framework handling all routes: auth, orders, payments, push, QR |
 | **node:sqlite** | Database | Embedded SQL database built into Node — zero setup, the whole DB is one file (`kitchen.db`) |
-| **Vanilla JavaScript (ES modules)** | Web UI | No framework, no build step — the browser loads `app.js` directly; works anywhere static files can be served |
-| **HTML + CSS** | Pages & styling | Hand-written, mobile-first styles; no CSS framework |
+| **React 18** | User interface | Component-based UI for the staff dashboard, kitchen display, and customer tracking page |
+| **React Router** | Page navigation | Client-side routing between login, staff, kitchen, and customer pages without reloads |
+| **Vite** | Frontend build tool | Fast dev server and optimized production bundle for the React app |
 | **PWA** (service worker + manifest) | Installable app | Staff/customers can "Add to Home Screen" on iPhone and get an app-like experience |
 | **Web Push (VAPID)** | Customer notifications | Sends "Your order is ready!" push notifications even when the browser is closed; `web-push` library on the server |
 | **Server-Sent Events (SSE)** | Live updates | One-way realtime stream — the customer's tracking page updates the instant kitchen changes a status |
@@ -68,19 +69,18 @@ Customer phone                Counter staff              Kitchen display
 Requirements: Node.js 22+ (uses the built-in `node:sqlite`, no native builds).
 
 ```bash
-# 1. Install server dependencies (the web UI needs no install, no build)
-cd server && npm install && cd ..
+# 1. Install
+cd server && npm install && cd ../client && npm install && cd ..
 
-# 2. Seed database (users, menu, VAPID keys for push)
-cd server && npm run seed && cd ..
+# 2. Seed database (users, menu, VAPID keys for push) + build the web UI
+cd server && npm run seed && cd ../client && npm run build && cd ..
 
 # 3. Run
 ./start.sh
 # → http://localhost:3000
 ```
 
-Or manually: `cd server && npm start` (serves the API **and** the web UI, which
-is plain HTML/CSS/JS — no frontend build step, no bundler required).
+Or manually: `cd server && npm start` (serves the API **and** the built client).
 
 ## Staff logins (seeded)
 
@@ -147,12 +147,12 @@ kitchen-qr-app/
 │       ├── sse.ts            # live event streams (staff + customer)
 │       ├── qr.ts             # QR PNG generation (409 before payment)
 │       └── seed.ts           # demo users, menu, keys
-├── client/                      # zero-dependency web UI (no build, no bundler)
-│   ├── index.html
-│   ├── app.js                  # router + all pages (staff, kitchen, customer)
-│   ├── styles.css
-│   ├── sw.js                   # service worker: push + offline shell
-│   └── manifest.webmanifest    # PWA install metadata
+├── client/
+│   └── src/
+│       ├── pages/            # Login, StaffDashboard, NewOrder,
+│       │                     # StaffOrderDetail, KitchenDisplay, CustomerOrder
+│       ├── lib/api.ts        # typed API client
+│       └── lib/push.ts       # push subscription logic
 ├── scripts/smoke-test.py     # 28 end-to-end API checks
 └── docs/                     # screenshots
 ```
