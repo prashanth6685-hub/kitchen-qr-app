@@ -4,7 +4,7 @@ import type { Response } from 'express';
 const channels = new Map<string, Set<Response>>();
 const globalListeners = new Set<Response>();
 
-function addTo(map: Map<string, Set<Response>>, key: string, res: Response) {
+function addTo<K>(map: Map<K, Set<Response>>, key: K, res: Response) {
   let set = map.get(key);
   if (!set) {
     set = new Set();
@@ -13,7 +13,7 @@ function addTo(map: Map<string, Set<Response>>, key: string, res: Response) {
   set.add(res);
 }
 
-function removeFrom(map: Map<string, Set<Response>>, key: string, res: Response) {
+function removeFrom<K>(map: Map<K, Set<Response>>, key: K, res: Response) {
   const set = map.get(key);
   if (!set) return;
   set.delete(res);
@@ -69,4 +69,33 @@ export function broadcastOrderUpdate(order: {
     for (const res of set) sseSend(res, 'order', order);
   }
   for (const res of globalListeners) sseSend(res, 'order', order);
+}
+
+// ---------- Module 2: waiting-list channels ----------
+
+// location id -> set of open SSE streams (staff waitlist dashboards)
+const waitlistChannels = new Map<number, Set<Response>>();
+
+export function subscribeWaitlistLocation(locationId: number, res: Response) {
+  addTo(waitlistChannels, locationId, res);
+}
+
+export function unsubscribeWaitlistLocation(locationId: number, res: Response) {
+  removeFrom(waitlistChannels, locationId, res);
+}
+
+/** Broadcast a waitlist change to the affected customer page(s) and staff screens. */
+export function broadcastWaitlistUpdate(
+  publicToken: string,
+  locationId: number,
+  payload: unknown
+) {
+  const set = channels.get(publicToken);
+  if (set) {
+    for (const res of set) sseSend(res, 'waitlist', payload);
+  }
+  const locSet = waitlistChannels.get(locationId);
+  if (locSet) {
+    for (const res of locSet) sseSend(res, 'waitlist', payload);
+  }
 }

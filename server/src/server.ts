@@ -14,6 +14,7 @@ import {
   StaffUser,
 } from './auth.js';
 import { ordersRouter } from './orders.js';
+import { waitlistRouter } from './waitlist.js';
 import { handleStripeWebhook, stripeConfigured } from './payments.js';
 import { saveSubscription, getVapidPublicKey, pushEnabled } from './push.js';
 
@@ -107,6 +108,7 @@ app.get('/api/counters', requireAuth, (_req, res) => {
 });
 
 app.use('/api/orders', ordersRouter);
+app.use('/api/waitlist', waitlistRouter);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 

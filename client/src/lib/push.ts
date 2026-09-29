@@ -46,12 +46,39 @@ export async function isStandalone(): Promise<boolean> {
  * Returns a human-readable status for the UI.
  */
 export async function enablePush(orderToken: string): Promise<{ ok: boolean; message: string }> {
+  return subscribePush(
+    '/api/notifications/subscribe',
+    { token: orderToken },
+    "You're all set — we'll notify you when your order is ready.",
+    'You can still track your order on this page.'
+  );
+}
+
+/**
+ * Ask for notification permission and subscribe to Web Push for a waitlist entry.
+ * Returns a human-readable status for the UI.
+ */
+export async function enableWaitlistPush(waitlistToken: string): Promise<{ ok: boolean; message: string }> {
+  return subscribePush(
+    '/api/waitlist/notifications/subscribe',
+    { token: waitlistToken },
+    "You're all set — we'll notify you when your table is almost ready.",
+    'You can still watch your place in line on this page.'
+  );
+}
+
+async function subscribePush(
+  subscribeUrl: string,
+  payload: Record<string, unknown>,
+  okMessage: string,
+  blockedFallback: string
+): Promise<{ ok: boolean; message: string }> {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     return { ok: false, message: 'Push notifications are not supported in this browser.' };
   }
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') {
-    return { ok: false, message: 'Notifications were blocked. You can still track your order on this page.' };
+    return { ok: false, message: `Notifications were blocked. ${blockedFallback}` };
   }
   try {
     const keyRes = await fetch('/api/notifications/vapid-key');
@@ -68,13 +95,13 @@ export async function enablePush(orderToken: string): Promise<{ ok: boolean; mes
       });
     }
     const device = (await isIOS()) ? 'ios' : 'android/other';
-    const res = await fetch('/api/notifications/subscribe', {
+    const res = await fetch(subscribeUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: orderToken, subscription: sub.toJSON(), device_type: device }),
+      body: JSON.stringify({ ...payload, subscription: sub.toJSON(), device_type: device }),
     });
     if (!res.ok) throw new Error('subscribe failed');
-    return { ok: true, message: "You're all set — we'll notify you when your order is ready." };
+    return { ok: true, message: okMessage };
   } catch (e) {
     console.error('[push]', e);
     return { ok: false, message: 'Could not enable notifications, but this page still updates live.' };

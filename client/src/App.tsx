@@ -6,6 +6,9 @@ import NewOrder from './pages/NewOrder';
 import StaffOrderDetail from './pages/StaffOrderDetail';
 import KitchenDisplay from './pages/KitchenDisplay';
 import CustomerOrder from './pages/CustomerOrder';
+import CheckIn from './pages/CheckIn';
+import WaitTracking from './pages/WaitTracking';
+import WaitlistAdmin from './pages/WaitlistAdmin';
 
 function TopBar() {
   const user = getUser();
@@ -21,6 +24,7 @@ function TopBar() {
           {user.username} · {user.role.replace('_', ' ')}
         </span>
         <Link className="link" to="/staff">Orders</Link>
+        <Link className="link" to="/staff/waitlist">Waitlist</Link>
         {(user.role === 'ADMIN' || user.role === 'COUNTER_STAFF') && (
           <Link className="link" to="/staff/new">+ New</Link>
         )}
@@ -56,6 +60,7 @@ function Home() {
           {user ? (
             <>
               <Link className="btn" to="/staff">Staff dashboard</Link>
+              <Link className="btn secondary" to="/staff/waitlist">Waitlist</Link>
               <Link className="btn secondary" to="/kitchen">Kitchen display</Link>
             </>
           ) : (
@@ -75,6 +80,16 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/order/:token" element={<CustomerOrder />} />
+        <Route path="/checkin/:slug" element={<CheckIn />} />
+        <Route path="/wait/:token" element={<WaitTracking />} />
+        <Route
+          path="/staff/waitlist"
+          element={
+            <RequireStaff>
+              <WaitlistAdmin />
+            </RequireStaff>
+          }
+        />
         <Route
           path="/staff"
           element={
