@@ -112,7 +112,7 @@ ordersRouter.use(requireAuth);
 
 ordersRouter.post(
   '/',
-  requireRole('ADMIN', 'COUNTER_STAFF'),
+  requireRole('ADMIN'),
   async (req: AuthRequest, res) => {
     const { customer_name, customer_phone, special_instructions, counter_id, items } = req.body ?? {};
 
@@ -312,7 +312,7 @@ ordersRouter.get('/:id/qr.png', (req: AuthRequest, res) => {
 // Create a Stripe Checkout session for an unpaid order (card payment).
 ordersRouter.post(
   '/:id/payments/stripe',
-  requireRole('ADMIN', 'COUNTER_STAFF'),
+  requireRole('ADMIN'),
   async (req: AuthRequest, res) => {
     if (!stripeConfigured) {
       return res.status(400).json({ error: 'Stripe is not configured' });
@@ -329,7 +329,7 @@ ordersRouter.post(
 // Cash payment — a real payment flow for counters that accept cash.
 ordersRouter.post(
   '/:id/payments/cash',
-  requireRole('ADMIN', 'COUNTER_STAFF'),
+  requireRole('ADMIN'),
   (req: AuthRequest, res) => {
     try {
       const result = markOrderPaid(Number(req.params.id), 'cash', null);
@@ -341,7 +341,7 @@ ordersRouter.post(
 );
 
 // DEMO ONLY: simulated card payment for testing without Stripe keys.
-ordersRouter.post('/:id/payments/demo', requireRole('ADMIN', 'COUNTER_STAFF'), (req, res) => {
+ordersRouter.post('/:id/payments/demo', requireRole('ADMIN'), (req, res) => {
   if (!DEMO_PAYMENTS) {
     return res.status(403).json({ error: 'Demo payments are disabled' });
   }
