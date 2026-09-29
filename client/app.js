@@ -1442,7 +1442,7 @@ function StaffOrderDetailPage({ id }) {
               ${
                 l.code
                   ? `<div class="item-row" style="padding-top:0;align-items:center">
-                       <span class="sub">🏷 ${esc(l.code)} −${money(l.codeDisc)}</span>
+                       <span class="sub">Discount (${esc(l.code)}) −${money(l.codeDisc)}</span>
                        <button class="btn secondary sm" data-disc-code-rm="${i}">Remove</button>
                      </div>`
                   : ''
@@ -1538,7 +1538,7 @@ function StaffOrderDetailPage({ id }) {
           </div>${
             lineDisc > 0
               ? `<div class="item-row" style="padding-top:0"><span class="sub">${
-                  it.discount_code ? `🏷 ${esc(it.discount_code)}` : 'Item discount'
+                  it.discount_code ? `Discount (${esc(it.discount_code)})` : 'Item discount'
                 }</span><span class="sub">−${money(lineDisc)}</span></div>`
               : ''
           }`;
