@@ -210,6 +210,7 @@ const routes = [
   { re: /^\/staff\/new$/, page: NewOrderPage, staff: true },
   { re: /^\/staff\/menu$/, page: MenuPage, staff: true },
   { re: /^\/staff\/discounts$/, page: DiscountsPage, staff: true },
+  { re: /^\/staff\/report$/, page: ReportPage, staff: true },
   { re: /^\/staff\/orders\/(\d+)$/, page: StaffOrderDetailPage, staff: true, params: ['id'] },
   { re: /^\/kitchen$/, page: KitchenDisplayPage, staff: true },
 ];
@@ -527,6 +528,7 @@ function StaffDashboardPage() {
       <div class="btn-row" style="margin:0">
         ${canOrder ? '<a class="btn secondary" href="/staff/menu">Menu</a>' : ''}
         ${canOrder ? '<a class="btn secondary" href="/staff/discounts">Discounts</a>' : ''}
+        ${canOrder ? '<a class="btn secondary" href="/staff/report">Report</a>' : ''}
         ${canOrder ? '<a class="btn" href="/staff/new">New order</a>' : ''}
       </div>
     </div>
@@ -1261,6 +1263,89 @@ function DiscountsPage() {
     root.querySelectorAll('[data-dc-del]').forEach((b) =>
       b.addEventListener('click', () => deleteCode(Number(b.dataset.dcDel), b.dataset.dcCode))
     );
+  }
+
+  load();
+  return () => {};
+}
+
+/* ------------------------- staff sales report ------------------------- */
+
+function ReportPage() {
+  if (getViewRole() !== 'ADMIN') {
+    go('/staff');
+    return () => {};
+  }
+  let data = null;
+  let error = null;
+
+  async function load() {
+    try {
+      data = await api('/api/orders/report/summary');
+      error = null;
+      render();
+    } catch (e) {
+      error = e.message;
+      render();
+    }
+  }
+
+  function stat(label, value) {
+    return `<div class="card" style="flex:1;min-width:130px;text-align:center">
+      <div class="sub" style="margin-bottom:4px">${label}</div>
+      <div style="font-size:20px;font-weight:800">${value}</div>
+    </div>`;
+  }
+
+  function render() {
+    root.innerHTML = `
+    ${topBar()}
+    <div class="page wide">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <h1>Sales report</h1>
+        <a class="btn secondary" href="/staff">← Orders</a>
+      </div>
+      <p class="sub">Totals across all <b>completed</b> orders.</p>
+      ${error ? `<div class="error">${esc(error)}</div>` : ''}
+      ${
+        data
+          ? `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+        ${stat('Orders completed', data.orders)}
+        ${stat('Items sold', data.items.reduce((s, i) => s + i.qty, 0))}
+        ${stat('Gross', money(data.item_gross_cents))}
+        ${stat('Item discounts', '−' + money(data.item_discount_cents))}
+        ${stat('Order discounts', '−' + money(data.order_discount_cents))}
+        ${stat('Net revenue', money(data.net_cents))}
+      </div>
+      <div class="card">
+        <h2>Items sold</h2>
+        ${
+          data.items.length === 0
+            ? '<div class="empty">No completed orders yet.</div>'
+            : `<div style="overflow-x:auto"><table class="orders static">
+                <thead><tr><th>Item</th><th>Orders</th><th>Qty</th><th>Amount</th><th>Discount</th><th>Net</th></tr></thead>
+                <tbody>
+                  ${data.items
+                    .map(
+                      (i) => `<tr>
+                        <td><b>${esc(i.item_name)}</b></td>
+                        <td>${i.orders}</td>
+                        <td>${i.qty}</td>
+                        <td>${money(i.gross_cents)}</td>
+                        <td>${i.discount_cents > 0 ? '−' + money(i.discount_cents) : '—'}</td>
+                        <td><b>${money(i.net_cents)}</b></td>
+                      </tr>`
+                    )
+                    .join('')}
+                </tbody>
+              </table></div>`
+        }
+      </div>`
+          : '<div class="card"><div class="empty">Loading…</div></div>'
+      }
+    </div>`;
+    wireTopBar();
   }
 
   load();

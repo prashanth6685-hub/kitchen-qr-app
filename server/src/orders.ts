@@ -268,6 +268,53 @@ ordersRouter.post(
   }
 );
 
+// Admin: sales report aggregated over COMPLETED orders — per-item qty sold,
+// gross amount, item-level discounts and net, plus order-level totals.
+ordersRouter.get('/report/summary', requireRole('ADMIN'), (req: AuthRequest, res) => {
+  const items = all<{
+    item_name: string;
+    orders: number;
+    qty: number;
+    gross_cents: number;
+    discount_cents: number;
+    net_cents: number;
+  }>(
+    `SELECT item_name,
+            COUNT(DISTINCT order_id) AS orders,
+            SUM(quantity) AS qty,
+            SUM(quantity * unit_price_cents) AS gross_cents,
+            SUM(MIN(COALESCE(discount_cents, 0) + COALESCE(code_discount_cents, 0),
+                    quantity * unit_price_cents)) AS discount_cents,
+            SUM(quantity * unit_price_cents) -
+              SUM(MIN(COALESCE(discount_cents, 0) + COALESCE(code_discount_cents, 0),
+                      quantity * unit_price_cents)) AS net_cents
+     FROM order_items
+     WHERE order_id IN (SELECT id FROM orders WHERE order_status = 'COMPLETED')
+     GROUP BY item_name
+     ORDER BY qty DESC, item_name ASC`
+  );
+  const totals = row<{
+    orders: number;
+    order_discount_cents: number;
+    net_cents: number;
+  }>(
+    `SELECT COUNT(*) AS orders,
+            COALESCE(SUM(discount_cents), 0) AS order_discount_cents,
+            COALESCE(SUM(total_cents), 0) AS net_cents
+     FROM orders WHERE order_status = 'COMPLETED'`
+  )!;
+  const itemGross = items.reduce((s, i) => s + (i.gross_cents || 0), 0);
+  const itemDiscountTotal = items.reduce((s, i) => s + (i.discount_cents || 0), 0);
+  res.json({
+    orders: totals.orders,
+    items,
+    item_gross_cents: itemGross,
+    item_discount_cents: itemDiscountTotal,
+    order_discount_cents: totals.order_discount_cents,
+    net_cents: totals.net_cents,
+  });
+});
+
 ordersRouter.get('/', (req: AuthRequest, res) => {
   const { status, q, limit } = req.query as Record<string, string>;
   const clauses: string[] = [];

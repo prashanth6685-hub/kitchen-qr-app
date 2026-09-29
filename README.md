@@ -79,6 +79,14 @@ Customer phone                Counter staff              Kitchen display
 - API: `GET /api/discount-codes` · `POST /api/discount-codes/validate` ·
   `POST / PUT / DELETE /api/discount-codes[/:id]` (admin)
 
+## Sales report
+
+- Admin page **Orders → Report** (`/staff/report`): totals across all
+  **completed** orders — per item it shows orders, quantity sold, gross amount,
+  discounts, and net; summary cards show orders completed, items sold, gross,
+  item discounts, order discounts, and net revenue.
+- API: `GET /api/orders/report/summary` (admin)
+
 ## Quick start
 
 Requirements: Node.js 22+ (uses the built-in `node:sqlite`, no native builds).

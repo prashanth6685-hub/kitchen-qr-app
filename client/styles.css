@@ -82,6 +82,8 @@ table.orders th, table.orders td { text-align: left; padding: 10px 8px; border-b
 table.orders th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 table.orders tr { cursor: pointer; }
 table.orders tr:hover td { background: #f8fafc; }
+table.orders.static tr { cursor: default; }
+table.orders.static tr:hover td { background: transparent; }
 
 .badge {
   display: inline-block; padding: 4px 10px; border-radius: 999px;

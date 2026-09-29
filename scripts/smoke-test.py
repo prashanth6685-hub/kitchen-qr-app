@@ -200,5 +200,43 @@ s, d = req("GET", f"/api/orders/{oid4}", token=counter_tok)
 bir = next(i for i in d["items"] if i["item_name"] == "Chicken Biryani")
 check("history survives code deletion", bir["discount_code"] == "BIRYANI5" and bir["code_discount_cents"] == 1000, str(bir))
 
+print("== sales report ==")
+s, d = req("GET", "/api/orders/report/summary")
+check("report requires login", s == 401, f"got {s}")
+s, d = req("GET", "/api/orders/report/summary", token=kitchen_tok)
+check("report is admin-only", s == 403, f"got {s}")
+s, d = req("GET", "/api/orders/report/summary", token=counter_tok)
+check("report loads", s == 200 and "items" in d, f"got {s}")
+before_items = {i["item_name"]: i for i in d["items"]}
+orders_before, od_before, net_before = d["orders"], d["order_discount_cents"], d["net_cents"]
+# 10 biryani with BIRYANI5 ($5 off each) + 3 naan with $1 manual off + $2 order discount
+s, d = req("POST", "/api/orders", token=counter_tok, body={"items": [
+    {"name": "Chicken Biryani", "qty": 10, "unit_price": 1299, "discount_code": "BIRYANI5"},
+    {"name": "Garlic Naan", "qty": 3, "unit_price": 349, "discount_cents": 100},
+]})
+check("report order created", s == 201, f"got {s} {d}")
+oid5 = d["id"]
+s, d = req("POST", f"/api/orders/{oid5}/payments/demo", token=counter_tok)
+s, d = req("PATCH", f"/api/orders/{oid5}/discount", token=counter_tok, body={"discount_cents": 200})
+for st in ["RECEIVED", "PREPARING", "READY", "COMPLETED"]:
+    s, d = req("PATCH", f"/api/orders/{oid5}/status", token=kitchen_tok, body={"status": st})
+check("report order completed", s == 200 and d["order_status"] == "COMPLETED", f"got {s} {d}")
+s, d = req("GET", "/api/orders/report/summary", token=counter_tok)
+after_items = {i["item_name"]: i for i in d["items"]}
+check("report counts the new order", d["orders"] == orders_before + 1, f"got {d['orders']}")
+b0 = before_items.get("Chicken Biryani", {"qty": 0, "gross_cents": 0, "discount_cents": 0, "net_cents": 0})
+b1 = after_items["Chicken Biryani"]
+check("biryani qty aggregated", b1["qty"] - b0["qty"] == 10, str(b1))
+check("biryani gross aggregated", b1["gross_cents"] - b0["gross_cents"] == 12990, str(b1))
+check("biryani code discount aggregated", b1["discount_cents"] - b0["discount_cents"] == 5000, str(b1))
+check("biryani net aggregated", b1["net_cents"] - b0["net_cents"] == 7990, str(b1))
+n0 = before_items.get("Garlic Naan", {"qty": 0, "gross_cents": 0, "discount_cents": 0, "net_cents": 0})
+n1 = after_items["Garlic Naan"]
+check("naan qty aggregated", n1["qty"] - n0["qty"] == 3, str(n1))
+check("naan manual discount aggregated", n1["discount_cents"] - n0["discount_cents"] == 100, str(n1))
+check("naan net aggregated", n1["net_cents"] - n0["net_cents"] == 947, str(n1))
+check("order-level discount in report", d["order_discount_cents"] - od_before == 200, str(d["order_discount_cents"]))
+check("net revenue adds order total", d["net_cents"] - net_before == 8737, str(d["net_cents"]))
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
