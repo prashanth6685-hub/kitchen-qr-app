@@ -31,6 +31,32 @@ function saveSession(token, user) {
 function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(VIEW_KEY);
+}
+
+// --- role views ---
+// Admins can switch between the Admin view (orders) and the Kitchen view
+// (food prep) from the top-right menu, using the same login. Everyone else
+// is locked to their own role.
+const VIEW_KEY = 'kqr_view_role';
+const VIEW_ROLES = ['ADMIN', 'KITCHEN_STAFF'];
+function getViewRole() {
+  const user = getUser();
+  if (!user) return null;
+  if (user.role !== 'ADMIN') return user.role;
+  const v = localStorage.getItem(VIEW_KEY);
+  return VIEW_ROLES.includes(v) ? v : user.role;
+}
+function setViewRole(role) {
+  if (VIEW_ROLES.includes(role)) localStorage.setItem(VIEW_KEY, role);
+  render();
+}
+function roleLabel(role) {
+  return role === 'ADMIN' ? 'Admin' : 'Kitchen';
+}
+function displayName(username) {
+  const u = String(username || '');
+  return u.charAt(0).toUpperCase() + u.slice(1);
 }
 
 async function api(path, opts = {}) {
@@ -237,22 +263,62 @@ window.addEventListener('popstate', render);
 function topBar() {
   const user = getUser();
   if (!user) return '';
-  const canOrder = user.role === 'ADMIN' || user.role === 'COUNTER_STAFF';
+  const viewRole = getViewRole();
+  const canOrder = viewRole === 'ADMIN';
+  const initial = esc((user.username || '?').charAt(0).toUpperCase());
   return `
   <div class="topbar">
     <div class="brand"><span>●</span> Kitchen Orders</div>
     <nav>
-      <span class="who">${esc(user.username)} · ${esc(user.role.replace('_', ' '))}</span>
       <a class="link" href="/staff">Orders</a>
       ${canOrder ? '<a class="link" href="/staff/new">+ New</a>' : ''}
       <a class="link" href="/kitchen">Kitchen</a>
       <a class="link" href="/staff/waitlist">Waitlist</a>
-      <button class="btn secondary" id="logout-btn" style="min-height:36px;padding:6px 12px;font-size:13px">Log out</button>
+      <div class="menu-wrap">
+        <button class="user-chip" id="user-chip" aria-haspopup="true">
+          <span class="avatar">${initial}</span>
+          <span><span class="nm">${esc(displayName(user.username))}</span><br><span class="rl">${esc(roleLabel(viewRole))}</span></span>
+        </button>
+        <div class="user-menu" id="user-menu" style="display:none">
+          <div class="head">
+            <div class="nm">${esc(displayName(user.username))}</div>
+            <div class="un">@${esc(user.username)} · ID ${esc(user.id)} · ${esc(roleLabel(user.role))}</div>
+          </div>
+          ${
+            user.role === 'ADMIN'
+              ? `<div class="sec">Switch role view</div>
+                 ${VIEW_ROLES.map(
+                   (r) => `<button class="role-opt${r === viewRole ? ' current' : ''}" data-view-role="${r}">
+                     ${r === 'ADMIN' ? '🧾' : '👨‍🍳'} ${esc(roleLabel(r))} view
+                     ${r === viewRole ? '<span class="tick">✓</span>' : ''}
+                   </button>`
+                 ).join('')}`
+              : ''
+          }
+          <div class="foot">
+            <button class="btn secondary block sm" id="logout-btn" style="width:100%">Log out</button>
+          </div>
+        </div>
+      </div>
     </nav>
   </div>`;
 }
 
 function wireTopBar() {
+  const chip = document.getElementById('user-chip');
+  const menu = document.getElementById('user-menu');
+  if (chip && menu) {
+    chip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+    });
+    document.addEventListener('click', (e) => {
+      if (!menu.contains(e.target)) menu.style.display = 'none';
+    });
+    menu.querySelectorAll('[data-view-role]').forEach((b) => {
+      b.addEventListener('click', () => setViewRole(b.getAttribute('data-view-role')));
+    });
+  }
   const btn = document.getElementById('logout-btn');
   if (btn) {
     btn.addEventListener('click', () => {
@@ -286,24 +352,36 @@ function HomePage() {
 
 function LoginPage() {
   root.innerHTML = `
-  <div class="page">
-    <div class="card" style="margin-top:40px">
-      <h1>Staff log in</h1>
-      <p class="sub">Counter and kitchen staff sign in here.</p>
+  <div class="login-wrap">
+    <div class="login-hero">
+      <div class="tag">
+        <h2>From order to table,<br>without the chaos.</h2>
+        <p>Live kitchen display, QR ordering & table waitlist â all in one place.</p>
+      </div>
+    </div>
+    <div class="login-panel">
+      <div class="login-logo">🍽️</div>
+      <h1>Kitchen Orders</h1>
+      <p class="sub">Staff sign in â admins take orders, kitchen fires them up.</p>
       <div class="error" id="login-error" style="display:none"></div>
       <form id="login-form">
         <label class="field">
           <span>Username</span>
-          <input id="login-user" autocomplete="username" />
+          <input id="login-user" autocomplete="username" placeholder="e.g. admin" />
         </label>
         <label class="field">
           <span>Password</span>
-          <input id="login-pass" type="password" autocomplete="current-password" />
+          <input id="login-pass" type="password" autocomplete="current-password" placeholder="••••••••" />
         </label>
         <button class="btn block" id="login-btn" type="submit">Log in</button>
       </form>
+      <div class="login-accounts">
+        <b>Demo accounts</b><br>
+        Admin &mdash; <b>admin / admin123</b> (takes orders, manages everything)<br>
+        Kitchen &mdash; <b>kitchen / kitchen123</b> (prepares &amp; marks ready)
+      </div>
+      <p class="sub" style="text-align:center;margin-top:18px"><a class="link" href="/">← Back to home</a></p>
     </div>
-    <p class="sub" style="text-align:center"><a class="link" href="/">← Back to home</a></p>
   </div>`;
 
   const form = document.getElementById('login-form');
@@ -312,7 +390,7 @@ function LoginPage() {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     btn.disabled = true;
-    btn.textContent = 'Signing in…';
+    btn.innerHTML = '<span class="spinner"></span> Signing in…';
     errBox.style.display = 'none';
     try {
       const data = await api('/api/auth/login', {
@@ -339,7 +417,7 @@ const DASH_FILTERS = ['ALL', 'PENDING_PAYMENT', 'PAID', 'RECEIVED', 'PREPARING',
 
 function StaffDashboardPage() {
   const user = getUser();
-  const canOrder = user.role === 'ADMIN' || user.role === 'COUNTER_STAFF';
+  const canOrder = getViewRole() === 'ADMIN';
   let orders = [];
   let filter = 'ALL';
   let q = '';
@@ -896,7 +974,7 @@ const KITCHEN_ACTIVE = ['RECEIVED', 'PREPARING', 'READY'];
 
 function KitchenDisplayPage() {
   const user = getUser();
-  const canUpdate = user.role === 'ADMIN' || user.role === 'KITCHEN_STAFF';
+  const canUpdate = getViewRole() === 'ADMIN' || getViewRole() === 'KITCHEN_STAFF';
   let orders = [];
   let busyId = null;
   let error = null;
@@ -1116,7 +1194,7 @@ function CustomerOrderPage({ token }) {
       if (pushState === 'denied') {
         body = `<div class="info">Notifications are blocked for this site. You can still watch your order status update live on this page.</div>`;
       } else if (pushState === 'unsupported') {
-        body = `<div class="info">This browser doesn't support push notifications — this page still updates live automatically.</div>`;
+        body = `<div class="info">This browser doesn't support push notifications. Keep this page open — it updates live and will sound an alert when you're called.</div>`;
       } else {
         body = `<button class="btn block" id="push-btn" ${pushBusy ? 'disabled' : ''}>${
           pushBusy ? 'Enabling…' : '🔔 Enable Notifications'
@@ -1309,9 +1387,9 @@ function makePushController(onChange, opts) {
       }
       let body = '';
       if (this.state === 'denied') {
-        body = `<div class="info">Notifications are blocked for this site. You can still watch this page — it updates live automatically.</div>`;
+        body = `<div class="info">Notifications are blocked for this site. Keep this page open — it updates live and will sound an alert when you're called.</div>`;
       } else if (this.state === 'unsupported') {
-        body = `<div class="info">This browser doesn't support push notifications — this page still updates live automatically.</div>`;
+        body = `<div class="info">This browser doesn't support push notifications. Keep this page open — it updates live and will sound an alert when you're called.</div>`;
       } else {
         body = `
         ${
@@ -1571,6 +1649,7 @@ function WaitlistTrackingPage({ token }) {
       if (sig !== lastSig) {
         lastSig = sig;
         entry = data;
+        maybeCallAlert(entry);
         render();
       }
     } catch (e) {
@@ -1578,6 +1657,53 @@ function WaitlistTrackingPage({ token }) {
         error = e.message;
         render();
       }
+    }
+  }
+
+
+  // --- in-page "table ready" alert ---
+  // Fires when the page is OPEN and the entry gets CALLED — even if push
+  // notifications are blocked or unsupported. Chime + vibration + flashing tab.
+  let alertedCall = null;
+  function callAlert() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        const ctx = new AC();
+        const now = ctx.currentTime;
+        [523.25, 783.99, 1046.5].forEach((freq, i) => {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.type = 'sine';
+          o.frequency.value = freq;
+          const t = now + i * 0.22;
+          g.gain.setValueAtTime(0.0001, t);
+          g.gain.exponentialRampToValueAtTime(0.5, t + 0.04);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+          o.connect(g);
+          g.connect(ctx.destination);
+          o.start(t);
+          o.stop(t + 0.65);
+        });
+      }
+    } catch {}
+    try {
+      if (navigator.vibrate) navigator.vibrate([250, 120, 250, 120, 500]);
+    } catch {}
+    const orig = document.title;
+    let n = 0;
+    const iv = window.setInterval(() => {
+      document.title = n % 2 ? orig : '🔔 YOUR TABLE IS READY!';
+      if (++n > 13) {
+        window.clearInterval(iv);
+        document.title = orig;
+      }
+    }, 800);
+  }
+  function maybeCallAlert(e) {
+    if (e && e.status === 'CALLED' && e.called_time && alertedCall !== e.called_time) {
+      alertedCall = e.called_time;
+      callAlert();
     }
   }
 
@@ -1749,6 +1875,7 @@ function WaitlistTrackingPage({ token }) {
           if (sig !== lastSig) {
             lastSig = sig;
             entry = u;
+            maybeCallAlert(entry);
             render();
           }
         }
@@ -1779,7 +1906,7 @@ function WaitlistTrackingPage({ token }) {
 
 function StaffWaitlistPage() {
   const user = getUser();
-  const canWrite = user.role === 'ADMIN' || user.role === 'COUNTER_STAFF';
+  const canWrite = getViewRole() === 'ADMIN';
   let locations = [];
   let locationId = null;
   let summary = null;
@@ -2029,7 +2156,7 @@ function StaffWaitlistPage() {
         </div>
       </div>
       ${picker}`
-          : `<div class="info">Your staff role is read-only — ask an admin or counter staff member to manage the queue.</div>`
+          : `<div class="info">Your staff role is read-only — ask an admin to manage the queue.</div>`
       }
 
       <div class="card">
