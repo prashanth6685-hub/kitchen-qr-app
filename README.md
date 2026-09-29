@@ -74,8 +74,13 @@ Customer phone                Counter staff              Kitchen display
   Biryani) or **% off** (e.g. `WELCOME10` = 10% off), and may be restricted to
   one menu item (matched by name, case-insensitive) or valid on any item.
 - Inactive codes are unpublished — they stay in the list but can't be applied.
-- At payment time the admin sets a manual $ discount and/or applies a code per
-  item; the total is `items (net of per-item discounts) − order-level discount`.
+- Before payment, the admin applies a discount **code** per item in the Discount
+  section (type the code and hit Apply — or Enter). No manual discount amounts;
+  anything you need (e.g. 10% off) is just another code created on the Discounts
+  page. Applied codes show as `Discount (CODE)`.
+- The total is `items (net of per-item discounts) − order-level discount`.
+- Each item row has an ✏️ icon for inline editing (quantity, price, remove);
+  add items with the compact add row. Save / Cancel applies the changes.
 - API: `GET /api/discount-codes` · `POST /api/discount-codes/validate` ·
   `POST / PUT / DELETE /api/discount-codes[/:id]` (admin)
 

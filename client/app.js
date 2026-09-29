@@ -1362,8 +1362,10 @@ function StaffOrderDetailPage({ id }) {
   let lastSig = '';
   let editLines = null; // local editable copy of items (admin, pending orders only)
   let editNotes = null; // local editable copy of special instructions
-  let discBusy = false;
-  let itemDisc = null; // local editable copy of per-item discounts (admin, at payment time)
+  let editingRow = null; // index of the item row expanded for inline editing
+  let editDirty = false; // unsaved item edits pending
+  let codeBusy = false;
+  let codeErrors = {}; // per-item discount code errors, keyed by index
 
   async function load() {
     try {
@@ -1375,7 +1377,9 @@ function StaffOrderDetailPage({ id }) {
         order = data;
         editLines = null; // re-init from fresh order data on render
         editNotes = null;
-        itemDisc = null;
+        editingRow = null;
+        editDirty = false;
+        codeErrors = {};
         render();
       }
     } catch (e) {
@@ -1453,132 +1457,174 @@ function StaffOrderDetailPage({ id }) {
     }, 0);
   }
 
-  function editCardHTML() {
-    if (!editable()) {
-      return order && isAdmin() && !['PENDING_PAYMENT', 'PAID', 'RECEIVED', 'CANCELLED'].includes(order.order_status)
-        ? '<div class="card"><div class="info">🔒 The kitchen has started preparing this order — items can no longer be edited.</div></div>'
-        : '';
-    }
-    const lines = editInit();
+  // Items list: admin gets a per-item edit icon that expands inline editing
+  // (qty, price, remove). Everyone else sees a read-only list.
+  function displayLines() {
+    if (editable()) return editInit();
+    return order.items.map((it) => ({
+      name: it.item_name,
+      qty: it.quantity,
+      unit_price: it.unit_price_cents,
+      discount_cents: it.discount_cents || 0,
+      discount_code: it.discount_code || null,
+      code_discount_cents: it.code_discount_cents || 0,
+    }));
+  }
+
+  function lineDiscHTML(l) {
+    const lineDisc = (l.discount_cents || 0) + (l.code_discount_cents || 0);
+    return lineDisc > 0
+      ? `<br /><span class="sub">${l.discount_code ? `Discount (${esc(l.discount_code)})` : 'Item discount'} −${money(lineDisc)}</span>`
+      : '';
+  }
+
+  function editRowHTML(l, i) {
     return `
-      <div class="card">
-        <h2>Edit items</h2>
-        <div id="edit-lines">
-          ${lines
-            .map(
-              (l, i) => `
-            <div class="item-row">
-              <span>${esc(l.name)} <span class="sub">${money(l.unit_price)} each</span></span>
-              <span class="qty">
-                <button data-edit-dec="${i}" aria-label="decrease">−</button>
-                <b>${l.qty}</b>
-                <button data-edit-inc="${i}" aria-label="increase">+</button>
-                <button data-edit-del="${i}" aria-label="remove" style="margin-left:6px">×</button>
-              </span>
-            </div>`
-            )
-            .join('') || '<div class="empty">No items.</div>'}
-        </div>
-        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
-          <input id="edit-add-name" placeholder="Item name" style="flex:2;min-width:120px" />
-          <input id="edit-add-price" placeholder="$0.00" inputmode="decimal" style="flex:1;min-width:90px" />
-          <button class="btn secondary" id="edit-add">Add</button>
-        </div>
-        <div style="margin-top:10px">
-          <label class="field"><span>Special instructions</span><textarea id="edit-notes" rows="2" placeholder="e.g. less spicy, no onions">${esc(editNotes ?? order.special_instructions ?? '')}</textarea></label>
-        </div>
-        <div class="btn-row" style="margin-top:12px;align-items:center">
-          <button class="btn" id="edit-save" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : 'Save changes'}</button>
-          <span class="sub">New total: <b>${money(Math.max(0, editTotal() - (order.discount_cents || 0)))}</b></span>
+      <div style="padding:8px 0 10px 10px;border-left:3px solid var(--accent,#e08a3c);margin:2px 0 8px">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <span class="qty">
+            <button data-edit-dec="${i}" aria-label="decrease">−</button>
+            <b>${l.qty}</b>
+            <button data-edit-inc="${i}" aria-label="increase">+</button>
+          </span>
+          <label class="sub">$<input data-edit-price="${i}" inputmode="decimal"
+            value="${(l.unit_price / 100).toFixed(2)}" style="max-width:80px" /></label>
+          <button class="btn secondary sm" data-edit-del="${i}">🗑 Remove</button>
+          <button class="btn secondary sm" data-edit-row-done>Done</button>
         </div>
       </div>`;
   }
 
-  // Per-item discounts (manual $ off + discount codes), editable at payment time.
-  function itemDiscInit() {
-    if (itemDisc === null && order) {
-      itemDisc = order.items.map((it) => ({
-        name: it.item_name,
-        qty: it.quantity,
-        unit: it.unit_price_cents,
-        manual: it.discount_cents || 0,
-        code: it.discount_code || null,
-        codeDisc: it.code_discount_cents || 0,
-        codeErr: null,
-      }));
-    }
-    return itemDisc || [];
-  }
-
-  function discountHTML() {
-    if (!isAdmin()) return '';
-    const lines = itemDiscInit();
+  function itemsListHTML() {
+    const canEdit = editable();
+    const lines = displayLines();
     return `
-        <div style="margin-top:14px;padding-top:12px;border-top:1px dashed #e5d9c8">
-          <h3 style="margin:0 0 8px">Item discounts</h3>
-          ${lines
-            .map(
-              (l, i) => `
-            <div style="margin-bottom:12px">
-              <div class="item-row" style="padding-bottom:2px">
-                <span>${esc(l.name)} <b>×${l.qty}</b></span>
-                <span>${money(l.qty * l.unit)}</span>
-              </div>
-              ${
-                l.code
-                  ? `<div class="item-row" style="padding-top:0;align-items:center">
-                       <span class="sub">Discount (${esc(l.code)}) −${money(l.codeDisc)}</span>
-                       <button class="btn secondary sm" data-disc-code-rm="${i}">Remove</button>
-                     </div>`
-                  : ''
-              }
-              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
-                <input id="disc-manual-${i}" placeholder="$ off" inputmode="decimal"
-                  style="max-width:100px" value="${l.manual ? (l.manual / 100).toFixed(2) : ''}" />
-                <input id="disc-code-${i}" placeholder="CODE" autocapitalize="characters"
-                  style="max-width:120px;text-transform:uppercase" />
-                <button class="btn secondary sm" data-disc-code-apply="${i}" ${discBusy ? 'disabled' : ''}>Apply code</button>
-              </div>
-              ${l.codeErr ? `<div class="error" style="margin:6px 0 0">${esc(l.codeErr)}</div>` : ''}
-            </div>`
-            )
-            .join('')}
-          <div class="btn-row" style="margin-top:4px">
-            <button class="btn" id="disc-items-save" ${discBusy ? 'disabled' : ''}>${discBusy ? 'Saving…' : 'Save item discounts'}</button>
+        ${lines
+          .map(
+            (l, i) => `
+          <div class="item-row" style="align-items:center">
+            <span>${esc(l.name)} <b>×${l.qty}</b>${lineDiscHTML(l)}</span>
+            <span style="display:flex;gap:8px;align-items:center">
+              <span>${money(l.qty * l.unit_price)}</span>
+              ${canEdit ? `<button class="btn secondary sm" data-edit-row="${i}" title="Edit item">✏️</button>` : ''}
+            </span>
           </div>
-          <h3 style="margin:14px 0 8px">Order discount</h3>
-          ${order.discount_cents > 0 ? `<p class="sub">Current discount: <b>${money(order.discount_cents)}</b></p>` : ''}
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <input id="disc-amt" type="number" min="0" step="0.01" inputmode="decimal"
-              placeholder="$0.00" style="max-width:140px"
-              value="${order.discount_cents ? (order.discount_cents / 100).toFixed(2) : ''}" />
-            <button class="btn secondary" id="disc-apply" ${discBusy ? 'disabled' : ''}>${discBusy ? 'Applying…' : 'Apply discount'}</button>
-            ${order.discount_cents > 0 ? '<button class="btn secondary" id="disc-clear">Remove</button>' : ''}
-          </div>
-        </div>`;
+          ${canEdit && editingRow === i ? editRowHTML(l, i) : ''}`
+          )
+          .join('') || '<div class="empty">No items.</div>'}
+        ${canEdit ? `
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+          <input id="edit-add-name" placeholder="Add item…" style="flex:2;min-width:110px" />
+          <input id="edit-add-price" placeholder="$0.00" inputmode="decimal" style="flex:1;min-width:80px" />
+          <button class="btn secondary sm" id="edit-add">Add</button>
+        </div>
+        <div style="margin-top:10px">
+          <textarea id="edit-notes" rows="2" placeholder="Special instructions (e.g. less spicy, no onions)"
+            style="width:100%">${esc(editNotes ?? order.special_instructions ?? '')}</textarea>
+        </div>` : ''}
+        ${!canEdit && isAdmin() && order && !['PENDING_PAYMENT', 'PAID', 'RECEIVED', 'CANCELLED'].includes(order.order_status)
+          ? '<div class="info" style="margin-top:8px">🔒 The kitchen has started preparing this order — items can no longer be edited.</div>'
+          : ''}
+        ${canEdit ? `
+        <div class="btn-row" style="margin-top:12px;align-items:center">
+          <button class="btn" id="edit-save" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : 'Save changes'}</button>
+          <button class="btn secondary" id="edit-cancel">Cancel</button>
+          <span class="sub">New total: <b>${money(Math.max(0, editTotal() - (order.discount_cents || 0)))}</b></span>
+        </div>` : ''}`;
   }
 
-  async function saveItemDiscounts() {
-    const lines = itemDiscInit().map((l, i) => {
-      const manualEl = document.getElementById(`disc-manual-${i}`);
-      const manual = manualEl ? Math.max(0, Math.round(Number(manualEl.value) * 100) || 0) : l.manual;
-      return {
-        name: l.name, qty: l.qty, unit_price: l.unit,
-        discount_cents: manual,
-        discount_code: l.code,
-      };
-    });
-    discBusy = true;
+  // Discount codes only — one compact row per item, placed before the payment card.
+  function discountCardHTML() {
+    if (!editable()) return '';
+    return `
+      <div class="card">
+        <h2>Discount</h2>
+        <p class="sub" style="margin-top:0">Apply a discount code per item. Manage codes in
+          <a class="link" href="/staff/discounts">Discounts</a>.</p>
+        ${order.items
+          .map((it, i) => {
+            const ld = (it.discount_cents || 0) + (it.code_discount_cents || 0);
+            return `
+          <div class="item-row" style="align-items:center">
+            <span>${esc(it.item_name)} <b>×${it.quantity}</b>
+              ${it.discount_code ? `<br /><span class="sub">Discount (${esc(it.discount_code)}) −${money(ld)}</span>` : ''}
+            </span>
+            <span style="display:flex;gap:6px;align-items:center">
+              ${it.discount_code
+                ? `<button class="btn secondary sm" data-code-rm="${i}" ${codeBusy ? 'disabled' : ''}>Remove</button>`
+                : `<input id="code-${i}" placeholder="CODE" autocapitalize="characters"
+                     style="max-width:100px;text-transform:uppercase" />
+                   <button class="btn secondary sm" data-code-apply="${i}" ${codeBusy ? 'disabled' : ''}>Apply</button>`}
+            </span>
+          </div>
+          ${codeErrors[i] ? `<div class="error" style="margin:0 0 8px">${esc(codeErrors[i])}</div>` : ''}`;
+          })
+          .join('')}
+      </div>`;
+  }
+
+  function codeLines(withCode, idx) {
+    return order.items.map((it, j) => ({
+      name: it.item_name,
+      qty: it.quantity,
+      unit_price: it.unit_price_cents,
+      discount_cents: it.discount_cents || 0,
+      discount_code: j === idx ? withCode : it.discount_code || null,
+    }));
+  }
+
+  async function applyCode(i) {
+    const input = document.getElementById(`code-${i}`);
+    const code = (input ? input.value : '').trim();
+    if (!code) {
+      showNotice('Enter a discount code first.');
+      return;
+    }
+    if (editDirty) {
+      showNotice('Save your item changes first, then apply the code.');
+      return;
+    }
+    codeBusy = true;
+    codeErrors[i] = null;
     error = null;
     render();
     try {
-      await api(`/api/orders/${order.id}/items`, { method: 'PATCH', body: JSON.stringify({ items: lines }) });
-      discBusy = false;
-      itemDisc = null;
-      showNotice('Item discounts saved.');
+      const res = await api('/api/discount-codes/validate', {
+        method: 'POST',
+        body: JSON.stringify({ code, item_name: order.items[i].item_name }),
+      });
+      await api(`/api/orders/${order.id}/items`, {
+        method: 'PATCH',
+        body: JSON.stringify({ items: codeLines(res.code, i) }),
+      });
+      codeBusy = false;
+      showNotice(`Discount (${res.code}) applied.`);
       await load();
     } catch (e) {
-      discBusy = false;
+      codeBusy = false;
+      codeErrors[i] = e.message;
+      render();
+    }
+  }
+
+  async function removeCode(i) {
+    if (editDirty) {
+      showNotice('Save your item changes first, then change the discount.');
+      return;
+    }
+    codeBusy = true;
+    error = null;
+    render();
+    try {
+      await api(`/api/orders/${order.id}/items`, {
+        method: 'PATCH',
+        body: JSON.stringify({ items: codeLines(null, i) }),
+      });
+      codeBusy = false;
+      showNotice('Discount code removed.');
+      await load();
+    } catch (e) {
+      codeBusy = false;
       error = e.message;
       render();
     }
@@ -1612,24 +1658,7 @@ function StaffOrderDetailPage({ id }) {
           <span class="badge ${esc(order.order_status)}" style="font-size:16px;padding:8px 18px">${esc(STATUS_LABELS[order.order_status] || order.order_status)}</span>
           <span class="sub">${paid ? '✅ Paid' : '⏳ Unpaid'}</span>
         </div>
-        ${order.items
-          .map(
-            (it) => {
-              const lineDisc = (it.discount_cents || 0) + (it.code_discount_cents || 0);
-              return `
-          <div class="item-row">
-            <span>${esc(it.item_name)} <b>×${it.quantity}</b></span>
-            <span>${money(it.total_price_cents)}</span>
-          </div>${
-            lineDisc > 0
-              ? `<div class="item-row" style="padding-top:0"><span class="sub">${
-                  it.discount_code ? `Discount (${esc(it.discount_code)})` : 'Item discount'
-                }</span><span class="sub">−${money(lineDisc)}</span></div>`
-              : ''
-          }`;
-            }
-          )
-          .join('')}
+        ${itemsListHTML()}
         ${order.discount_cents > 0 ? `<div class="item-row"><span>Order discount</span><span>−${money(order.discount_cents)}</span></div>` : ''}
         <div class="total-row"><span>Total</span><span>${money(order.total_cents)}</span></div>
         <div class="sub" style="margin-top:10px">
@@ -1640,7 +1669,7 @@ function StaffOrderDetailPage({ id }) {
         </div>
       </div>
 
-      ${editCardHTML()}
+      ${discountCardHTML()}
 
       ${
         !paid
@@ -1653,11 +1682,10 @@ function StaffOrderDetailPage({ id }) {
           <button class="btn secondary" id="pay-cash" ${busy ? 'disabled' : ''}>💵 Cash received</button>
           <button class="btn warn" id="pay-demo" ${busy ? 'disabled' : ''}>🧪 Demo card payment</button>
         </div>
-        <p class="sub" style="margin-top:10px">
+        <p class="sub" style="margin:10px 0 0">
           Card payments via Stripe Checkout open automatically when Stripe keys are configured. Demo payments are
           for testing only and must be disabled in production (DEMO_PAYMENTS=false).
         </p>
-        ${discountHTML()}
       </div>`
           : `
       ${order.order_status === 'PAID' ? `<div class="card"><div class="info">💡 Next step: open the <a class="link" href="/kitchen">Kitchen page</a> and tap <b>Accept order</b> to start preparing it.</div></div>` : ''}
@@ -1700,24 +1728,57 @@ function StaffOrderDetailPage({ id }) {
     const copyBtn = document.getElementById('qr-copy');
     if (copyBtn) copyBtn.addEventListener('click', copyLink);
 
-    // --- edit items (admin, pending orders only) ---
+    // --- inline per-item editing (admin, pending orders only) ---
     root.querySelectorAll('[data-edit-inc]').forEach((b) =>
       b.addEventListener('click', () => {
         const l = editInit()[Number(b.dataset.editInc)];
-        if (l && l.qty < 99) l.qty++;
+        if (l && l.qty < 99) {
+          l.qty++;
+          editDirty = true;
+        }
         render();
       })
     );
     root.querySelectorAll('[data-edit-dec]').forEach((b) =>
       b.addEventListener('click', () => {
         const l = editInit()[Number(b.dataset.editDec)];
-        if (l && l.qty > 1) l.qty--;
+        if (l && l.qty > 1) {
+          l.qty--;
+          editDirty = true;
+        }
         render();
       })
     );
     root.querySelectorAll('[data-edit-del]').forEach((b) =>
       b.addEventListener('click', () => {
         editInit().splice(Number(b.dataset.editDel), 1);
+        editingRow = null;
+        editDirty = true;
+        render();
+      })
+    );
+    root.querySelectorAll('[data-edit-row]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const i = Number(b.dataset.editRow);
+        editingRow = editingRow === i ? null : i;
+        render();
+      })
+    );
+    root.querySelectorAll('[data-edit-row-done]').forEach((b) =>
+      b.addEventListener('click', () => {
+        editingRow = null;
+        render();
+      })
+    );
+    root.querySelectorAll('[data-edit-price]').forEach((input) =>
+      input.addEventListener('change', () => {
+        const i = Number(input.dataset.editPrice);
+        const v = Math.round(Number(input.value) * 100);
+        const l = editInit()[i];
+        if (l && Number.isFinite(v) && v >= 0) {
+          l.unit_price = v;
+          editDirty = true;
+        }
         render();
       })
     );
@@ -1731,10 +1792,24 @@ function StaffOrderDetailPage({ id }) {
           return;
         }
         editInit().push({ name, qty: 1, unit_price: price });
+        editDirty = true;
         render();
       });
     const notesEl = document.getElementById('edit-notes');
-    if (notesEl) notesEl.addEventListener('input', () => { editNotes = notesEl.value; });
+    if (notesEl)
+      notesEl.addEventListener('input', () => {
+        editNotes = notesEl.value;
+        editDirty = true;
+      });
+    const cancelBtn = document.getElementById('edit-cancel');
+    if (cancelBtn)
+      cancelBtn.addEventListener('click', () => {
+        editLines = null;
+        editNotes = null;
+        editingRow = null;
+        editDirty = false;
+        render();
+      });
     const saveBtn = document.getElementById('edit-save');
     if (saveBtn)
       saveBtn.addEventListener('click', async () => {
@@ -1774,108 +1849,23 @@ function StaffOrderDetailPage({ id }) {
         }
       });
 
-    // --- per-item discounts (admin, during payment) ---
-    const lines = itemDiscInit();
-    lines.forEach((l, i) => {
-      const manualEl = document.getElementById(`disc-manual-${i}`);
-      if (manualEl)
-        manualEl.addEventListener('input', () => {
-          const v = Math.max(0, Math.round(Number(manualEl.value) * 100) || 0);
-          itemDisc[i].manual = v;
+    // --- discount codes (admin, before payment) ---
+    root.querySelectorAll('[data-code-apply]').forEach((b) =>
+      b.addEventListener('click', () => applyCode(Number(b.dataset.codeApply)))
+    );
+    root.querySelectorAll('[data-code-rm]').forEach((b) =>
+      b.addEventListener('click', () => removeCode(Number(b.dataset.codeRm)))
+    );
+    order.items.forEach((it, i) => {
+      const input = document.getElementById(`code-${i}`);
+      if (input)
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            applyCode(i);
+          }
         });
-      const codeEl = document.getElementById(`disc-code-${i}`);
-      if (codeEl) codeEl.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') { ev.preventDefault(); applyCodeBtn?.(i); }
-      });
     });
-
-    async function applyCodeBtn(i) {
-      const codeEl = document.getElementById(`disc-code-${i}`);
-      const code = (codeEl?.value || '').trim();
-      if (!code) { showNotice('Enter a discount code.'); return; }
-      itemDisc[i].codeErr = null;
-      discBusy = true;
-      render();
-      try {
-        const res = await api('/api/discount-codes/validate', {
-          method: 'POST',
-          body: JSON.stringify({ code, item_name: itemDisc[i].name }),
-        });
-        // compute per-unit discount the same way the server does
-        const l = itemDisc[i];
-        const gross = l.qty * l.unit;
-        let disc = 0;
-        if (res.amount_cents != null) disc = res.amount_cents * l.qty;
-        else if (res.percent_off != null) disc = Math.round((gross * res.percent_off) / 100);
-        itemDisc[i].code = res.code;
-        itemDisc[i].codeDisc = Math.min(disc, gross);
-        itemDisc[i].codeErr = null;
-        showNotice(`Code ${res.code} applied — save item discounts to confirm.`);
-      } catch (e) {
-        itemDisc[i].codeErr = e.message;
-      }
-      discBusy = false;
-      render();
-    }
-
-    document.querySelectorAll('[data-disc-code-apply]').forEach((b) =>
-      b.addEventListener('click', () => applyCodeBtn(Number(b.getAttribute('data-disc-code-apply'))))
-    );
-    document.querySelectorAll('[data-disc-code-rm]').forEach((b) =>
-      b.addEventListener('click', () => {
-        const i = Number(b.getAttribute('data-disc-code-rm'));
-        itemDisc[i].code = null;
-        itemDisc[i].codeDisc = 0;
-        saveItemDiscounts();
-      })
-    );
-    const discItemsSave = document.getElementById('disc-items-save');
-    if (discItemsSave) discItemsSave.addEventListener('click', saveItemDiscounts);
-
-    // --- discount (admin, during payment) ---
-    const discApply = document.getElementById('disc-apply');
-    if (discApply)
-      discApply.addEventListener('click', async () => {
-        const amt = Math.round(Number(document.getElementById('disc-amt').value) * 100);
-        if (!Number.isFinite(amt) || amt < 0) {
-          showNotice('Enter a valid discount amount.');
-          return;
-        }
-        discBusy = true;
-        render();
-        try {
-          await api(`/api/orders/${order.id}/discount`, {
-            method: 'PATCH',
-            body: JSON.stringify({ discount_cents: amt }),
-          });
-          discBusy = false;
-          showNotice(amt > 0 ? 'Discount applied.' : 'Discount removed.');
-          await load();
-        } catch (e) {
-          discBusy = false;
-          error = e.message;
-          render();
-        }
-      });
-    const discClear = document.getElementById('disc-clear');
-    if (discClear)
-      discClear.addEventListener('click', async () => {
-        discBusy = true;
-        render();
-        try {
-          await api(`/api/orders/${order.id}/discount`, {
-            method: 'PATCH',
-            body: JSON.stringify({ discount_cents: 0 }),
-          });
-          discBusy = false;
-          showNotice('Discount removed.');
-          await load();
-        } catch (e) {
-          discBusy = false;
-          error = e.message;
-          render();
-        }
-      });
   }
 
   load();
