@@ -46,9 +46,11 @@ if (!org) {
 }
 
 // --- Staff users ---
+// Two roles: ADMIN (takes orders, manages everything, can switch to kitchen view)
+// and KITCHEN_STAFF (prepares food, marks ready). The old counter account was
+// merged into admin — one login covers both.
 const users: [string, string, string][] = [
   ['admin', 'admin123', 'ADMIN'],
-  ['counter', 'counter123', 'COUNTER_STAFF'],
   ['kitchen', 'kitchen123', 'KITCHEN_STAFF'],
 ];
 for (const [username, password, role] of users) {
