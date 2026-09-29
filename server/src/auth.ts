@@ -68,7 +68,7 @@ export function requireRole(...roles: Role[]) {
 
 // Kitchen staff may move orders through the prep pipeline; counter staff manage
 // payments/creation; admins may do anything.
-export const PREP_STATUSES = ['RECEIVED', 'PREPARING', 'READY', 'COMPLETED'] as const;
+export const PREP_STATUSES = ['RECEIVED', 'PREPARING', 'PARTIALLY_READY', 'READY', 'COMPLETED'] as const;
 
 export function canSetStatus(role: Role, newStatus: string): boolean {
   if (role === 'ADMIN') return true;
@@ -76,7 +76,7 @@ export function canSetStatus(role: Role, newStatus: string): boolean {
     return (PREP_STATUSES as readonly string[]).includes(newStatus);
   }
   if (role === 'COUNTER_STAFF') {
-    return ['PAID', 'RECEIVED', 'CANCELLED', 'COMPLETED'].includes(newStatus);
+    return ['PAID', 'RECEIVED', 'PARTIALLY_READY', 'CANCELLED', 'COMPLETED'].includes(newStatus);
   }
   return false;
 }

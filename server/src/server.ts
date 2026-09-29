@@ -109,8 +109,11 @@ app.use('/api/orders', ordersRouter);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
-// ---------- Serve the client (PWA, zero build step) ----------
-const clientDir = join(__dirname, '..', '..', 'client');
+// ---------- Serve the client (Angular, prebuilt into client/dist) ----------
+// The Angular app is compiled ahead of time; client/dist is committed so the
+// app runs with no client-side install. Refresh it with `npm run build`
+// inside client/ (requires the Angular packages from npm).
+const clientDir = join(__dirname, '..', '..', 'client', 'dist');
 app.use(express.static(clientDir));
 // SPA fallback — but never swallow /api routes.
 app.get('*', (req, res, next) => {

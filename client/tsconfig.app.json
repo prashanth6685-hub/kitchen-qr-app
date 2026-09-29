@@ -1,0 +1,1 @@
+{"angularCompilerOptions":{"enableIvy":true,"strictTemplates":true},"compilerOptions":{"declaration":false,"outDir":".aot","rootDir":"src","sourceMap":false},"extends":"./tsconfig.json","include":["src/main.ts"]}

@@ -17,8 +17,9 @@ change → kitchen staff move the order RECEIVED → PREPARING → READY → COM
 | **Node.js 22+** | Backend runtime | Runs the API server; v22+ includes built-in SQLite so no native database drivers are needed |
 | **Express** | HTTP server & REST API | Lightweight framework handling all routes: auth, orders, payments, push, QR |
 | **node:sqlite** | Database | Embedded SQL database built into Node — zero setup, the whole DB is one file (`kitchen.db`) |
-| **Vanilla JavaScript (ES modules)** | Web UI | No framework, no build step — the browser loads `app.js` directly; works anywhere static files can be served |
-| **HTML + CSS** | Pages & styling | Hand-written, mobile-first styles; no CSS framework |
+| **Angular 22** (standalone components) | Web UI | Real Angular app with minimal dependencies — no CLI, no Vite; AOT-compiled with `ngc` and bundled with esbuild |
+| **Grid.js** (free, MIT) | Orders table | Feature-rich data grid on the staff dashboard: search, sort, pagination — no hand-rolled table |
+| **HTML + CSS** | Pages & styling | Hand-written modern design system; no CSS framework |
 | **PWA** (service worker + manifest) | Installable app | Staff/customers can "Add to Home Screen" on iPhone and get an app-like experience |
 | **Web Push (VAPID)** | Customer notifications | Sends "Your order is ready!" push notifications even when the browser is closed; `web-push` library on the server |
 | **Server-Sent Events (SSE)** | Live updates | One-way realtime stream — the customer's tracking page updates the instant kitchen changes a status |
@@ -68,7 +69,7 @@ Customer phone                Counter staff              Kitchen display
 Requirements: Node.js 22+ (uses the built-in `node:sqlite`, no native builds).
 
 ```bash
-# 1. Install server dependencies (the web UI needs no install, no build)
+# 1. Install server dependencies (the web UI is prebuilt — no install needed)
 cd server && npm install && cd ..
 
 # 2. Seed database (users, menu, VAPID keys for push)
@@ -79,8 +80,9 @@ cd server && npm run seed && cd ..
 # → http://localhost:3000
 ```
 
-Or manually: `cd server && npm start` (serves the API **and** the web UI, which
-is plain HTML/CSS/JS — no frontend build step, no bundler required).
+Or manually: `cd server && npm start` (serves the API **and** the prebuilt
+Angular web UI from `client/dist/` — committed, so no client build is needed
+to run. To change the UI: `cd client && npm install && npm run build`).
 
 ## Staff logins (seeded)
 
@@ -92,7 +94,7 @@ is plain HTML/CSS/JS — no frontend build step, no bundler required).
 
 Change these in production. Admins do everything; counter staff create orders
 and take payments; kitchen staff move orders through
-RECEIVED → PREPARING → READY → COMPLETED.
+RECEIVED → PREPARING → (PARTIALLY_READY) → READY → COMPLETED.
 
 ## The flow
 
@@ -105,6 +107,10 @@ RECEIVED → PREPARING → READY → COMPLETED.
    (iPhone: push works best after Share → Add to Home Screen.)
 5. Kitchen staff update status on the **Kitchen display** → the customer's
    page updates instantly via SSE, plus a push notification.
+6. Tapping **Mark done ✓** on an order opens the finish dialog with three
+   choices: **Partially ready** (some items ready now), **Completely done**
+   (order finished), or **Cancel order** — only the options valid for the
+   order's status and the staff member's role are shown.
 
 ## Payments
 
@@ -147,12 +153,14 @@ kitchen-qr-app/
 │       ├── sse.ts            # live event streams (staff + customer)
 │       ├── qr.ts             # QR PNG generation (409 before payment)
 │       └── seed.ts           # demo users, menu, keys
-├── client/                      # zero-dependency web UI (no build, no bundler)
-│   ├── index.html
-│   ├── app.js                  # router + all pages (staff, kitchen, customer)
-│   ├── styles.css
-│   ├── sw.js                   # service worker: push + offline shell
-│   └── manifest.webmanifest    # PWA install metadata
+├── client/                      # Angular web UI (minimal deps, no CLI/Vite)
+│   ├── src/                     # Angular source (standalone components)
+│   │   ├── main.ts              # bootstrap + service worker registration
+│   │   ├── styles.css           # modern design system + Grid.js theme
+│   │   └── app/                 # components, pages, services
+│   ├── dist/                    # prebuilt bundle (committed — runs with no install)
+│   ├── build.mjs                # esbuild bundling after ngc (AOT)
+│   └── package.json             # `npm run build` → ngc + esbuild → dist/
 ├── scripts/smoke-test.py     # 28 end-to-end API checks
 └── docs/                     # screenshots
 ```

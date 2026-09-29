@@ -82,7 +82,7 @@ s, d = req("GET", "/api/orders/token/deadbeefdeadbeefdeadbeefdeadbeef")
 check("bad token 404s", s == 404, f"got {s}")
 
 print("== status pipeline ==")
-for st in ["RECEIVED", "PREPARING", "READY", "COMPLETED"]:
+for st in ["RECEIVED", "PREPARING", "PARTIALLY_READY", "READY", "COMPLETED"]:
     s, d = req("PATCH", f"/api/orders/{oid}/status", token=kitchen_tok, body={"status": st})
     check(f"kitchen -> {st}", s == 200 and d["order_status"] == st, f"got {s} {d}")
 s, d = req("PATCH", f"/api/orders/{oid}/status", token=kitchen_tok, body={"status": "CANCELLED"})
@@ -95,7 +95,7 @@ s, d = req("GET", "/api/orders?status=COMPLETED", token=counter_tok)
 check("filter by status", s == 200 and any(o["id"] == oid for o in d), f"got {s}")
 s, d = req("GET", f"/api/orders/{oid}", token=counter_tok)
 hist = [h["new_status"] for h in d["history"]]
-check("history recorded", hist == ["PENDING_PAYMENT","PAID","RECEIVED","PREPARING","READY","COMPLETED"], str(hist))
+check("history recorded", hist == ["PENDING_PAYMENT","PAID","RECEIVED","PREPARING","PARTIALLY_READY","READY","COMPLETED"], str(hist))
 check("tracking url present", d["tracking_url"].endswith(f"/order/{ptoken}"), d["tracking_url"])
 
 print("== push endpoints ==")
