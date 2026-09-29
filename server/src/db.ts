@@ -31,6 +31,16 @@ ensureColumn('orders', 'discount_cents', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('order_items', 'discount_cents', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('order_items', 'discount_code', 'TEXT');
 ensureColumn('order_items', 'code_discount_cents', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('orders', 'completed_at', 'TEXT');
+// Backfill completion timestamps for orders finished before the column existed.
+db.exec(`
+  UPDATE orders SET completed_at = COALESCE(
+    (SELECT MAX(changed_at) FROM order_status_history
+     WHERE order_id = orders.id AND new_status = 'COMPLETED'),
+    updated_at
+  )
+  WHERE order_status = 'COMPLETED' AND completed_at IS NULL
+`);
 // --- Migration: allow the PARTIALLY_COMPLETED order status.
 // SQLite cannot alter a CHECK constraint, so rebuild the orders table once
 // (data-preserving: copy into a new table, drop the old one, rename).

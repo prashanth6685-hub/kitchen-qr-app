@@ -90,7 +90,13 @@ Customer phone                Counter staff              Kitchen display
   **completed** orders — per item it shows orders, quantity sold, gross amount,
   discounts, and net; summary cards show orders completed, items sold, gross,
   item discounts, order discounts, and net revenue.
-- API: `GET /api/orders/report/summary` (admin)
+- **Daily tab**: pick a date (‹ › arrows or the date picker) to see that day's
+  per-item sales — quantity, amount, discount, net — plus a Last 7 days trend
+  table (tap a day to jump to its breakdown). Day boundaries use your local
+  timezone.
+- API: `GET /api/orders/report/summary[?from=&to=]` (admin),
+  `GET /api/orders/report/daily?days=7` (admin). Orders record `completed_at`
+  on the COMPLETED transition (backfilled from status history for old orders).
 
 ## Quick start
 

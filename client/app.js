@@ -1276,18 +1276,68 @@ function ReportPage() {
     go('/staff');
     return () => {};
   }
-  let data = null;
+  let tab = 'all'; // 'all' | 'daily'
+  let allData = null;
+  let dayData = null;
+  let daily = [];
+  let dayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, local tz
+  let dayLoading = false;
   let error = null;
+
+  // Local-midnight -> UTC range for the selected day, so "Sep 29" means Sep 29
+  // in the user's timezone.
+  function dayRange(ds) {
+    const [y, m, d] = ds.split('-').map(Number);
+    return {
+      from: new Date(y, m - 1, d).toISOString(),
+      to: new Date(y, m - 1, d + 1).toISOString(),
+    };
+  }
+
+  function prettyDay(ds) {
+    const [y, m, d] = ds.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+      weekday: 'short', month: 'short', day: 'numeric',
+    });
+  }
+
+  function shiftDay(delta) {
+    const [y, m, d] = dayStr.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    dt.setDate(dt.getDate() + delta);
+    dayStr = dt.toLocaleDateString('en-CA');
+    loadDay();
+  }
 
   async function load() {
     try {
-      data = await api('/api/orders/report/summary');
+      allData = await api('/api/orders/report/summary');
+      daily = await api('/api/orders/report/daily?days=7');
       error = null;
+      if (tab === 'daily') {
+        await loadDay(false);
+      }
       render();
     } catch (e) {
       error = e.message;
       render();
     }
+  }
+
+  async function loadDay(rerender = true) {
+    dayLoading = true;
+    if (rerender) render();
+    try {
+      const { from, to } = dayRange(dayStr);
+      dayData = await api(
+        `/api/orders/report/summary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+      );
+      error = null;
+    } catch (e) {
+      error = e.message;
+    }
+    dayLoading = false;
+    if (rerender) render();
   }
 
   function stat(label, value) {
@@ -1297,36 +1347,29 @@ function ReportPage() {
     </div>`;
   }
 
-  function render() {
-    root.innerHTML = `
-    ${topBar()}
-    <div class="page wide">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <h1>Sales report</h1>
-        <a class="btn secondary" href="/staff">← Orders</a>
-      </div>
-      <p class="sub">Totals across all <b>completed</b> orders.</p>
-      ${error ? `<div class="error">${esc(error)}</div>` : ''}
-      ${
-        data
-          ? `
+  function summaryCardsHTML(d) {
+    return `
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">
-        ${stat('Orders completed', data.orders)}
-        ${stat('Items sold', data.items.reduce((s, i) => s + i.qty, 0))}
-        ${stat('Gross', money(data.item_gross_cents))}
-        ${stat('Item discounts', '−' + money(data.item_discount_cents))}
-        ${stat('Order discounts', '−' + money(data.order_discount_cents))}
-        ${stat('Net revenue', money(data.net_cents))}
-      </div>
+        ${stat('Orders completed', d.orders)}
+        ${stat('Items sold', d.items.reduce((s, i) => s + i.qty, 0))}
+        ${stat('Gross', money(d.item_gross_cents))}
+        ${stat('Item discounts', '−' + money(d.item_discount_cents))}
+        ${stat('Order discounts', '−' + money(d.order_discount_cents))}
+        ${stat('Net revenue', money(d.net_cents))}
+      </div>`;
+  }
+
+  function itemsTableHTML(d) {
+    return `
       <div class="card">
         <h2>Items sold</h2>
         ${
-          data.items.length === 0
-            ? '<div class="empty">No completed orders yet.</div>'
+          d.items.length === 0
+            ? '<div class="empty">No completed orders in this period.</div>'
             : `<div style="overflow-x:auto"><table class="orders static">
                 <thead><tr><th>Item</th><th>Orders</th><th>Qty</th><th>Amount</th><th>Discount</th><th>Net</th></tr></thead>
                 <tbody>
-                  ${data.items
+                  ${d.items
                     .map(
                       (i) => `<tr>
                         <td><b>${esc(i.item_name)}</b></td>
@@ -1341,16 +1384,111 @@ function ReportPage() {
                 </tbody>
               </table></div>`
         }
+      </div>`;
+  }
+
+  function render() {
+    const d = tab === 'all' ? allData : dayData;
+    root.innerHTML = `
+    ${topBar()}
+    <div class="page wide">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <h1>Sales report</h1>
+        <a class="btn secondary" href="/staff">← Orders</a>
+      </div>
+      <div class="btn-row" style="margin:4px 0 12px">
+        <button class="btn ${tab === 'all' ? '' : 'secondary'} sm" data-tab="all">All time</button>
+        <button class="btn ${tab === 'daily' ? '' : 'secondary'} sm" data-tab="daily">Daily</button>
+      </div>
+      ${error ? `<div class="error">${esc(error)}</div>` : ''}
+      ${
+        tab === 'daily'
+          ? `
+      <div class="card">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn secondary sm" data-day-shift="-1">‹</button>
+          <input type="date" id="report-day" value="${esc(dayStr)}" max="${new Date().toLocaleDateString('en-CA')}" />
+          <button class="btn secondary sm" data-day-shift="1">›</button>
+          <button class="btn secondary sm" data-day-today>Today</button>
+          <b style="margin-left:4px">${esc(prettyDay(dayStr))}</b>
+        </div>
+      </div>
+      ${
+        dayLoading || !d
+          ? '<div class="card"><div class="empty">Loading…</div></div>'
+          : `${summaryCardsHTML(d)}${itemsTableHTML(d)}`
+      }
+      <div class="card">
+        <h2>Last 7 days</h2>
+        ${
+          daily.length === 0
+            ? '<div class="empty">No completed orders yet.</div>'
+            : `<div style="overflow-x:auto"><table class="orders">
+                <thead><tr><th>Day</th><th>Orders</th><th>Items sold</th><th>Net revenue</th></tr></thead>
+                <tbody>
+                  ${daily
+                    .map(
+                      (r) => `<tr data-day-jump="${esc(r.day)}">
+                        <td><b>${esc(prettyDay(r.day))}</b></td>
+                        <td>${r.orders}</td>
+                        <td>${r.items}</td>
+                        <td><b>${money(r.net_cents)}</b></td>
+                      </tr>`
+                    )
+                    .join('')}
+                </tbody>
+              </table></div>
+              <p class="sub" style="margin-bottom:0">Tap a day to see its item breakdown above.</p>`
+        }
       </div>`
+          : `
+      <p class="sub">Totals across all <b>completed</b> orders.</p>
+      ${
+        d
+          ? `${summaryCardsHTML(d)}${itemsTableHTML(d)}`
           : '<div class="card"><div class="empty">Loading…</div></div>'
+      }`
       }
     </div>`;
     wireTopBar();
+
+    root.querySelectorAll('[data-tab]').forEach((b) =>
+      b.addEventListener('click', () => {
+        tab = b.dataset.tab;
+        if (tab === 'daily' && !dayData) loadDay();
+        else render();
+      })
+    );
+    const dayInput = document.getElementById('report-day');
+    if (dayInput)
+      dayInput.addEventListener('change', () => {
+        if (dayInput.value) {
+          dayStr = dayInput.value;
+          loadDay();
+        }
+      });
+    root.querySelectorAll('[data-day-shift]').forEach((b) =>
+      b.addEventListener('click', () => shiftDay(Number(b.dataset.dayShift)))
+    );
+    const todayBtn = document.querySelector('[data-day-today]');
+    if (todayBtn)
+      todayBtn.addEventListener('click', () => {
+        dayStr = new Date().toLocaleDateString('en-CA');
+        loadDay();
+      });
+    root.querySelectorAll('[data-day-jump]').forEach((tr) =>
+      tr.addEventListener('click', () => {
+        dayStr = tr.dataset.dayJump;
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        loadDay();
+      })
+    );
   }
 
   load();
   return () => {};
 }
+
 
 /* ------------------------- staff order detail ------------------------- */
 

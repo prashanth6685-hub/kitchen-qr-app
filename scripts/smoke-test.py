@@ -205,6 +205,11 @@ s, d = req("GET", "/api/orders/report/summary")
 check("report requires login", s == 401, f"got {s}")
 s, d = req("GET", "/api/orders/report/summary", token=kitchen_tok)
 check("report is admin-only", s == 403, f"got {s}")
+s, d = req("GET", "/api/orders/report/daily", token=kitchen_tok)
+check("daily report is admin-only", s == 403, f"got {s}")
+s, d = req("GET", "/api/orders/report/daily?days=7", token=counter_tok)
+check("daily report loads", s == 200 and len(d) == 7, f"got {s} len={len(d) if isinstance(d, list) else '?'}")
+check("daily rows shaped", all(set(r) == {"day", "orders", "items", "net_cents"} for r in d), str(d[:1]))
 s, d = req("GET", "/api/orders/report/summary", token=counter_tok)
 check("report loads", s == 200 and "items" in d, f"got {s}")
 before_items = {i["item_name"]: i for i in d["items"]}
@@ -237,6 +242,26 @@ check("naan manual discount aggregated", n1["discount_cents"] - n0["discount_cen
 check("naan net aggregated", n1["net_cents"] - n0["net_cents"] == 947, str(n1))
 check("order-level discount in report", d["order_discount_cents"] - od_before == 200, str(d["order_discount_cents"]))
 check("net revenue adds order total", d["net_cents"] - net_before == 8737, str(d["net_cents"]))
+
+print("== daily report ==")
+import datetime as _dt
+today = _dt.date.today().isoformat()
+# the oid5 order (10 biryani + 3 naan) was completed just now — it must show up today
+s, d = req("GET", "/api/orders/report/daily?days=7", token=counter_tok)
+today_row = next((r for r in d if r["day"] == today), None)
+check("today present in daily", today_row is not None, str([r["day"] for r in d]))
+check("today counts the completed order", today_row["orders"] >= 1 and today_row["items"] >= 13, str(today_row))
+check("today net matches order total", today_row["net_cents"] >= 8737, str(today_row))
+# date-range summary: wide range around now includes it, ancient range is empty
+s, d = req("GET", "/api/orders/report/summary?from=2026-01-01T00:00:00.000Z&to=2027-01-01T00:00:00.000Z", token=counter_tok)
+check("range summary loads", s == 200 and d["orders"] >= 1, f"got {s} {d.get('orders')}")
+bir = next((i for i in d["items"] if i["item_name"] == "Chicken Biryani"), None)
+check("range summary has biryani sales", bir is not None and bir["qty"] >= 10, str(bir))
+s, d = req("GET", "/api/orders/report/summary?from=2020-01-01T00:00:00.000Z&to=2020-01-02T00:00:00.000Z", token=counter_tok)
+check("empty range is empty", s == 200 and d["orders"] == 0 and d["items"] == [], f"got {s} {d}")
+# completed_at is stamped on the COMPLETED transition
+s, d = req("GET", f"/api/orders/{oid5}", token=counter_tok)
+check("completed_at stamped", s == 200 and bool(d.get("completed_at")), f"got {s} {d.get('completed_at')}")
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

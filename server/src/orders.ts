@@ -270,7 +270,20 @@ ordersRouter.post(
 
 // Admin: sales report aggregated over COMPLETED orders — per-item qty sold,
 // gross amount, item-level discounts and net, plus order-level totals.
+// Optional ?from= / ?to= (ISO datetimes) restrict to orders completed in [from, to).
 ordersRouter.get('/report/summary', requireRole('ADMIN'), (req: AuthRequest, res) => {
+  const { from, to } = req.query as Record<string, string>;
+  const rangeClauses = [`order_status = 'COMPLETED'`];
+  const rangeParams: any[] = [];
+  if (from) {
+    rangeClauses.push('completed_at >= ?');
+    rangeParams.push(from);
+  }
+  if (to) {
+    rangeClauses.push('completed_at < ?');
+    rangeParams.push(to);
+  }
+  const rangeWhere = rangeClauses.join(' AND ');
   const items = all<{
     item_name: string;
     orders: number;
@@ -289,9 +302,10 @@ ordersRouter.get('/report/summary', requireRole('ADMIN'), (req: AuthRequest, res
               SUM(MIN(COALESCE(discount_cents, 0) + COALESCE(code_discount_cents, 0),
                       quantity * unit_price_cents)) AS net_cents
      FROM order_items
-     WHERE order_id IN (SELECT id FROM orders WHERE order_status = 'COMPLETED')
+     WHERE order_id IN (SELECT id FROM orders WHERE ${rangeWhere})
      GROUP BY item_name
-     ORDER BY qty DESC, item_name ASC`
+     ORDER BY qty DESC, item_name ASC`,
+    ...rangeParams
   );
   const totals = row<{
     orders: number;
@@ -301,7 +315,8 @@ ordersRouter.get('/report/summary', requireRole('ADMIN'), (req: AuthRequest, res
     `SELECT COUNT(*) AS orders,
             COALESCE(SUM(discount_cents), 0) AS order_discount_cents,
             COALESCE(SUM(total_cents), 0) AS net_cents
-     FROM orders WHERE order_status = 'COMPLETED'`
+     FROM orders WHERE ${rangeWhere}`,
+    ...rangeParams
   )!;
   const itemGross = items.reduce((s, i) => s + (i.gross_cents || 0), 0);
   const itemDiscountTotal = items.reduce((s, i) => s + (i.discount_cents || 0), 0);
@@ -313,6 +328,43 @@ ordersRouter.get('/report/summary', requireRole('ADMIN'), (req: AuthRequest, res
     order_discount_cents: totals.order_discount_cents,
     net_cents: totals.net_cents,
   });
+});
+
+// Admin: per-day totals for the last N days (UTC day boundaries) — trend view
+// for business expansion planning: [{ day: 'YYYY-MM-DD', orders, items, net_cents }].
+ordersRouter.get('/report/daily', requireRole('ADMIN'), (req: AuthRequest, res) => {
+  const days = Math.min(Math.max(parseInt((req.query.days as string) || '7', 10) || 7, 1), 90);
+  const since = `-${days - 1} days`;
+  const perOrder = all<{ day: string; total_cents: number }>(
+    `SELECT date(completed_at) AS day, total_cents FROM orders
+     WHERE order_status = 'COMPLETED' AND completed_at >= datetime('now', ?)`,
+    since
+  );
+  const perItem = all<{ day: string; qty: number }>(
+    `SELECT date(o.completed_at) AS day, SUM(oi.quantity) AS qty
+     FROM orders o JOIN order_items oi ON oi.order_id = o.id
+     WHERE o.order_status = 'COMPLETED' AND o.completed_at >= datetime('now', ?)
+     GROUP BY day`,
+    since
+  );
+  const byDay = new Map<string, { day: string; orders: number; items: number; net_cents: number }>();
+  // Fill every day in the window so the trend has no gaps.
+  for (let d = days - 1; d >= 0; d--) {
+    const day = new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+    byDay.set(day, { day, orders: 0, items: 0, net_cents: 0 });
+  }
+  for (const r of perOrder) {
+    const e = byDay.get(r.day);
+    if (e) {
+      e.orders++;
+      e.net_cents += r.total_cents || 0;
+    }
+  }
+  for (const r of perItem) {
+    const e = byDay.get(r.day);
+    if (e) e.items += r.qty || 0;
+  }
+  res.json([...byDay.values()].sort((a, b) => (a.day < b.day ? 1 : -1)));
 });
 
 ordersRouter.get('/', (req: AuthRequest, res) => {
@@ -395,7 +447,11 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
   }
 
   const ts = now();
-  run('UPDATE orders SET order_status = ?, updated_at = ? WHERE id = ?', status, ts, order.id);
+  if (status === 'COMPLETED') {
+    run('UPDATE orders SET order_status = ?, updated_at = ?, completed_at = ? WHERE id = ?', status, ts, ts, order.id);
+  } else {
+    run('UPDATE orders SET order_status = ?, updated_at = ? WHERE id = ?', status, ts, order.id);
+  }
   run(
     'INSERT INTO order_status_history (order_id, old_status, new_status, changed_by) VALUES (?, ?, ?, ?)',
     order.id,
