@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 import type { Request, Response, NextFunction } from 'express';
 import { row } from './db.js';
 
-export type Role = 'ADMIN' | 'KITCHEN_STAFF' | 'COUNTER_STAFF';
+export type Role = 'ADMIN' | 'KITCHEN_STAFF';
 
 export interface StaffUser {
   id: number;
@@ -66,17 +66,14 @@ export function requireRole(...roles: Role[]) {
   };
 }
 
-// Kitchen staff may move orders through the prep pipeline; counter staff manage
-// payments/creation; admins may do anything.
+// Kitchen staff may move orders through the prep pipeline; admins may do anything
+// (the old COUNTER_STAFF role was merged into ADMIN — admins take all orders).
 export const PREP_STATUSES = ['RECEIVED', 'PREPARING', 'READY', 'COMPLETED'] as const;
 
 export function canSetStatus(role: Role, newStatus: string): boolean {
   if (role === 'ADMIN') return true;
   if (role === 'KITCHEN_STAFF') {
     return (PREP_STATUSES as readonly string[]).includes(newStatus);
-  }
-  if (role === 'COUNTER_STAFF') {
-    return ['PAID', 'RECEIVED', 'CANCELLED', 'COMPLETED'].includes(newStatus);
   }
   return false;
 }
