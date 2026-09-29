@@ -17,6 +17,7 @@ import {
   broadcastOrderUpdate,
 } from './sse.js';
 import { notifyOrderStatus } from './push.js';
+import { maybeSendReadySms } from './sms.js';
 import {
   createCheckoutSession,
   markOrderPaid,
@@ -295,6 +296,11 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
   notifyOrderStatus(order.id, updated.order_number, status, updated.public_token).catch((e) =>
     console.error('[orders] push notify failed', e)
   );
+  // Text the customer on READY — the user-friendly fallback for iPhones,
+  // where web push only works for Home-Screen-installed pages.
+  if (status === 'READY') {
+    maybeSendReadySms(updated.order_number, updated.customer_phone);
+  }
   res.json({ id: updated.id, order_status: updated.order_status, updated_at: ts });
 });
 
