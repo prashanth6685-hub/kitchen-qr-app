@@ -8,6 +8,9 @@ import { NewOrderComponent } from './pages/new-order.component';
 import { KitchenComponent } from './pages/kitchen.component';
 import { OrderDetailComponent } from './pages/order-detail.component';
 import { TrackingComponent } from './pages/tracking.component';
+import { CheckinComponent } from './pages/checkin.component';
+import { WaitTrackingComponent } from './pages/wait-tracking.component';
+import { WaitlistAdminComponent } from './pages/waitlist-admin.component';
 
 const staffGuard: CanActivateFn = () => {
   const auth = inject(AuthService);
@@ -29,7 +32,10 @@ export const routes: Routes = [
   { path: '', component: HomeComponent },
   { path: 'login', component: LoginComponent },
   { path: 'order/:token', component: TrackingComponent },
+  { path: 'checkin/:slug', component: CheckinComponent },
+  { path: 'wait/:token', component: WaitTrackingComponent },
   { path: 'staff', component: DashboardComponent, canActivate: [staffGuard] },
+  { path: 'staff/waitlist', component: WaitlistAdminComponent, canActivate: [staffGuard] },
   { path: 'staff/new', component: NewOrderComponent, canActivate: [counterGuard] },
   { path: 'staff/orders/:id', component: OrderDetailComponent, canActivate: [staffGuard] },
   { path: 'kitchen', component: KitchenComponent, canActivate: [staffGuard] },

@@ -66,6 +66,35 @@ export class ApiService {
     return es;
   }
 
+  /** Customer live waitlist feed (public token, no login). Listens for `waitlist` events. */
+  waitlistEvents(publicToken: string, onMessage: (data: any) => void): EventSource {
+    const es = new EventSource(`/api/waitlist/token/${encodeURIComponent(publicToken)}/events`);
+    es.addEventListener('waitlist', (e) => {
+      try {
+        onMessage(JSON.parse((e as MessageEvent).data));
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
+    return es;
+  }
+
+  /** Staff live waitlist feed for one location. EventSource can't set headers, so the token rides along as ?token=. */
+  waitlistStaffEvents(locationId: number, onMessage: (data: any) => void): EventSource {
+    const t = this.auth.token();
+    const es = new EventSource(
+      `/api/waitlist/admin/events?location_id=${locationId}&token=${encodeURIComponent(t ?? '')}`
+    );
+    es.addEventListener('waitlist', (e) => {
+      try {
+        onMessage(JSON.parse((e as MessageEvent).data));
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
+    return es;
+  }
+
   qrUrl(orderId: number): string {
     const t = this.auth.token();
     return `/api/orders/${orderId}/qr.png?token=${encodeURIComponent(t ?? '')}`;

@@ -19,6 +19,7 @@ import { AuthService } from '../core/auth.service';
         <div class="hero-actions">
           <a *ngIf="!auth.user()" class="btn primary lg" routerLink="/login">Staff login →</a>
           <a *ngIf="auth.user()" class="btn primary lg" [routerLink]="homeFor(auth.role)">Open {{ homeLabel() }} →</a>
+          <a *ngIf="auth.user()" class="btn lg" routerLink="/staff/waitlist" style="margin-left:0.6rem">🪑 Waitlist</a>
         </div>
         <div class="hero-steps">
           <div class="hero-step"><span>🧾</span><b>Counter</b> creates the order & takes payment</div>

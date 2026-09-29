@@ -63,10 +63,6 @@ const STATUS_MESSAGES: Record<string, { title: string; body: (n: number) => stri
     title: 'Order Ready 🎉',
     body: (n) => `Your order #${n} is ready for pickup!`,
   },
-  PARTIALLY_READY: {
-    title: 'Partially Ready ⏳',
-    body: (n) => `Some items of your order #${n} are ready — the rest are on the way!`,
-  },
   COMPLETED: {
     title: 'Order Completed',
     body: (n) => `Thank you for your order #${n}!`,
@@ -112,5 +108,110 @@ export async function notifyOrderStatus(
         console.error('[push] failed to send to', sub.endpoint.slice(0, 60), err?.message);
       }
     }
+  }
+}
+
+// ---------- Module 2: waiting-list push notifications ----------
+
+export interface WaitlistSubscriptionRecord {
+  id: number;
+  waitlist_entry_id: number;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  device_type: string | null;
+}
+
+export function saveWaitlistSubscription(
+  entryId: number,
+  sub: { endpoint: string; keys: { p256dh: string; auth: string } },
+  deviceType?: string
+) {
+  run(
+    `INSERT INTO waitlist_subscriptions (waitlist_entry_id, endpoint, p256dh, auth, device_type)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(endpoint) DO UPDATE SET waitlist_entry_id = excluded.waitlist_entry_id, device_type = excluded.device_type`,
+    entryId,
+    sub.endpoint,
+    sub.keys.p256dh,
+    sub.keys.auth,
+    deviceType || null
+  );
+}
+
+function subscriptionsForWaitlistEntry(entryId: number): WaitlistSubscriptionRecord[] {
+  return all('SELECT * FROM waitlist_subscriptions WHERE waitlist_entry_id = ?', entryId);
+}
+
+const WAITLIST_MESSAGES: Record<string, { title: (r: string) => string; body: (qn: string) => string }> = {
+  ALMOST_READY: {
+    title: (r) => `${r}: You're next!`,
+    body: (qn) => `Your table is almost ready. Queue number ${qn} — please stay near the restaurant.`,
+  },
+  CALLED: {
+    title: (r) => `${r}: Your table is ready!`,
+    body: (qn) => `Queue number ${qn} — please proceed to the host stand.`,
+  },
+  RECALLED: {
+    title: (r) => `${r}: Your table is ready!`,
+    body: (qn) => `Reminder: queue number ${qn} — please proceed to the host stand.`,
+  },
+  SEATED: {
+    title: (r) => `${r}: Welcome!`,
+    body: (qn) => `Queue number ${qn} is now seated. Enjoy your meal!`,
+  },
+};
+
+/**
+ * Push a waitlist status change to the customer's subscribed devices.
+ * Idempotent per status: ALMOST_READY / CALLED are only pushed once
+ * (tracked with notified_* flags on the entry); RECALLED re-pushes deliberately.
+ */
+export async function notifyWaitlistStatus(
+  entryId: number,
+  queueNumber: string,
+  newStatus: string,
+  publicToken: string,
+  restaurantName: string
+) {
+  if (!pushEnabled) return;
+  const msg = WAITLIST_MESSAGES[newStatus];
+  if (!msg) return;
+  const entry = row<{ notified_almost_ready: number; notified_called: number }>(
+    'SELECT notified_almost_ready, notified_called FROM waitlist_entries WHERE id = ?',
+    entryId
+  );
+  if (!entry) return;
+  if (newStatus === 'ALMOST_READY' && entry.notified_almost_ready) return;
+  if (newStatus === 'CALLED' && entry.notified_called) return;
+
+  const baseUrl = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  const subs = subscriptionsForWaitlistEntry(entryId);
+  if (subs.length === 0) return;
+  const payload = JSON.stringify({
+    title: msg.title(restaurantName),
+    body: msg.body(queueNumber),
+    url: `${baseUrl}/wait/${publicToken}`,
+    tag: `waitlist-${entryId}`,
+  });
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification(
+        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+        payload
+      );
+    } catch (err: any) {
+      // 404/410 = subscription gone; clean it up so we don't retry forever.
+      if (err?.statusCode === 404 || err?.statusCode === 410) {
+        run('DELETE FROM waitlist_subscriptions WHERE id = ?', sub.id);
+      } else {
+        console.error('[push] failed to send to', sub.endpoint.slice(0, 60), err?.message);
+      }
+    }
+  }
+  if (newStatus === 'ALMOST_READY') {
+    run('UPDATE waitlist_entries SET notified_almost_ready = 1 WHERE id = ?', entryId);
+  } else if (newStatus === 'CALLED') {
+    run('UPDATE waitlist_entries SET notified_called = 1 WHERE id = ?', entryId);
   }
 }

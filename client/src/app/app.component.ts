@@ -15,6 +15,7 @@ import { AuthService } from './core/auth.service';
       </a>
       <nav class="topnav" *ngIf="auth.user() as u">
         <a routerLink="/staff" *ngIf="u.role !== 'KITCHEN_STAFF'">Dashboard</a>
+        <a routerLink="/staff/waitlist">Waitlist</a>
         <a routerLink="/staff/new" *ngIf="u.role === 'ADMIN' || u.role === 'COUNTER_STAFF'">New order</a>
         <a routerLink="/kitchen">Kitchen</a>
       </nav>
@@ -32,10 +33,16 @@ export class AppComponent {
   auth = inject(AuthService);
   private router = inject(Router);
 
-  /** Hide the staff chrome on the login and customer tracking pages. */
+  /** Hide the staff chrome on the login and customer-facing pages. */
   showChrome(): boolean {
     const p = this.router.url;
-    return this.auth.user() !== null && !p.startsWith('/login') && !p.startsWith('/order/');
+    return (
+      this.auth.user() !== null &&
+      !p.startsWith('/login') &&
+      !p.startsWith('/order/') &&
+      !p.startsWith('/checkin/') &&
+      !p.startsWith('/wait/')
+    );
   }
 
   logout(): void {
