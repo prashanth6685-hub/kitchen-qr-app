@@ -84,16 +84,17 @@ Customer phone                Counter staff              Kitchen display
 - API: `GET /api/discount-codes` · `POST /api/discount-codes/validate` ·
   `POST / PUT / DELETE /api/discount-codes[/:id]` (admin)
 
-## Sales report
+## Order stats
 
-- Admin page **Orders → Report** (`/staff/report`): totals across all
+- Admin page **Orders → Order stats** (`/staff/report`): totals across all
   **completed** orders — per item it shows orders, quantity sold, gross amount,
   discounts, and net; summary cards show orders completed, items sold, gross,
   item discounts, order discounts, and net revenue.
-- **Daily tab**: pick a date (‹ › arrows or the date picker) to see that day's
-  per-item sales — quantity, amount, discount, net — plus a Last 7 days trend
-  table (tap a day to jump to its breakdown). Day boundaries use your local
-  timezone.
+- **Period selector**: quick presets (Today, Yesterday, Last 7 days, Last 30
+  days, All time), a single-date picker, or a custom From/To date range —
+  the cards and item table update for the selected period. Plus a Last 7 days
+  trend table (tap a day to jump to its breakdown). Day boundaries use your
+  local timezone.
 - API: `GET /api/orders/report/summary[?from=&to=]` (admin),
   `GET /api/orders/report/daily?days=7` (admin). Orders record `completed_at`
   on the COMPLETED transition (backfilled from status history for old orders).

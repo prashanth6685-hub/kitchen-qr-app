@@ -528,7 +528,7 @@ function StaffDashboardPage() {
       <div class="btn-row" style="margin:0">
         ${canOrder ? '<a class="btn secondary" href="/staff/menu">Menu</a>' : ''}
         ${canOrder ? '<a class="btn secondary" href="/staff/discounts">Discounts</a>' : ''}
-        ${canOrder ? '<a class="btn secondary" href="/staff/report">Report</a>' : ''}
+        ${canOrder ? '<a class="btn secondary" href="/staff/report">Order stats</a>' : ''}
         ${canOrder ? '<a class="btn" href="/staff/new">New order</a>' : ''}
       </div>
     </div>
@@ -1276,22 +1276,54 @@ function ReportPage() {
     go('/staff');
     return () => {};
   }
-  let tab = 'all'; // 'all' | 'daily'
-  let allData = null;
-  let dayData = null;
+  const todayStr = () => new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, local tz
+  let mode = 'preset'; // 'preset' | 'single' | 'custom'
+  let preset = 'today'; // 'today' | 'yesterday' | 'last7' | 'last30' | 'all'
+  let dayStr = todayStr();
+  let fromStr = '';
+  let toStr = '';
+  let data = null;
   let daily = [];
-  let dayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, local tz
-  let dayLoading = false;
+  let loading = false;
   let error = null;
 
-  // Local-midnight -> UTC range for the selected day, so "Sep 29" means Sep 29
-  // in the user's timezone.
-  function dayRange(ds) {
+  function shiftStr(ds, delta) {
+    const [y, m, d] = ds.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    dt.setDate(dt.getDate() + delta);
+    return dt.toLocaleDateString('en-CA');
+  }
+
+  // N local days starting at ds -> UTC [from, to)
+  function rangeDays(ds, n) {
     const [y, m, d] = ds.split('-').map(Number);
     return {
       from: new Date(y, m - 1, d).toISOString(),
-      to: new Date(y, m - 1, d + 1).toISOString(),
+      to: new Date(y, m - 1, d + n).toISOString(),
     };
+  }
+
+  function currentRange() {
+    const t = todayStr();
+    if (mode === 'single') return { range: rangeDays(dayStr, 1), label: prettyDay(dayStr) };
+    if (mode === 'custom') {
+      const n = Math.round((new Date(toStr) - new Date(fromStr)) / 86400000) + 1;
+      return { range: rangeDays(fromStr, n), label: `${prettyDay(fromStr)} – ${prettyDay(toStr)}` };
+    }
+    if (preset === 'today') return { range: rangeDays(t, 1), label: prettyDay(t) };
+    if (preset === 'yesterday') {
+      const y = shiftStr(t, -1);
+      return { range: rangeDays(y, 1), label: prettyDay(y) };
+    }
+    if (preset === 'last7') {
+      const s = shiftStr(t, -6);
+      return { range: rangeDays(s, 7), label: `${prettyDay(s)} – ${prettyDay(t)}` };
+    }
+    if (preset === 'last30') {
+      const s = shiftStr(t, -29);
+      return { range: rangeDays(s, 30), label: `${prettyDay(s)} – ${prettyDay(t)}` };
+    }
+    return { range: null, label: 'All time' };
   }
 
   function prettyDay(ds) {
@@ -1301,42 +1333,30 @@ function ReportPage() {
     });
   }
 
-  function shiftDay(delta) {
-    const [y, m, d] = dayStr.split('-').map(Number);
-    const dt = new Date(y, m - 1, d);
-    dt.setDate(dt.getDate() + delta);
-    dayStr = dt.toLocaleDateString('en-CA');
-    loadDay();
-  }
-
   async function load() {
     try {
-      allData = await api('/api/orders/report/summary');
       daily = await api('/api/orders/report/daily?days=7');
-      error = null;
-      if (tab === 'daily') {
-        await loadDay(false);
-      }
-      render();
     } catch (e) {
       error = e.message;
-      render();
     }
+    await loadStats(false);
+    render();
   }
 
-  async function loadDay(rerender = true) {
-    dayLoading = true;
+  async function loadStats(rerender = true) {
+    loading = true;
     if (rerender) render();
+    const { range } = currentRange();
+    const qs = range
+      ? `?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}`
+      : '';
     try {
-      const { from, to } = dayRange(dayStr);
-      dayData = await api(
-        `/api/orders/report/summary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
-      );
+      data = await api(`/api/orders/report/summary${qs}`);
       error = null;
     } catch (e) {
       error = e.message;
     }
-    dayLoading = false;
+    loading = false;
     if (rerender) render();
   }
 
@@ -1387,36 +1407,42 @@ function ReportPage() {
       </div>`;
   }
 
+  function presetBtn(key, label) {
+    const active = mode === 'preset' && preset === key;
+    return `<button class="btn ${active ? '' : 'secondary'} sm" data-preset="${key}">${label}</button>`;
+  }
+
   function render() {
-    const d = tab === 'all' ? allData : dayData;
+    const { label } = currentRange();
+    const t = todayStr();
     root.innerHTML = `
     ${topBar()}
     <div class="page wide">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <h1>Sales report</h1>
+        <h1>Order stats</h1>
         <a class="btn secondary" href="/staff">← Orders</a>
       </div>
-      <div class="btn-row" style="margin:4px 0 12px">
-        <button class="btn ${tab === 'all' ? '' : 'secondary'} sm" data-tab="all">All time</button>
-        <button class="btn ${tab === 'daily' ? '' : 'secondary'} sm" data-tab="daily">Daily</button>
+      <div class="card">
+        <div class="btn-row" style="margin-top:0">
+          ${presetBtn('today', 'Today')}
+          ${presetBtn('yesterday', 'Yesterday')}
+          ${presetBtn('last7', 'Last 7 days')}
+          ${presetBtn('last30', 'Last 30 days')}
+          ${presetBtn('all', 'All time')}
+        </div>
+        <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-top:12px">
+          <label class="sub">Date<br /><input type="date" id="stats-day" value="${esc(dayStr)}" max="${t}" /></label>
+          <label class="sub">From<br /><input type="date" id="stats-from" value="${esc(fromStr)}" max="${t}" /></label>
+          <label class="sub">To<br /><input type="date" id="stats-to" value="${esc(toStr)}" max="${t}" /></label>
+          <button class="btn secondary sm" id="stats-apply">Apply range</button>
+        </div>
+        <div class="sub" style="margin:10px 0 0">Showing: <b>${esc(label)}</b></div>
       </div>
       ${error ? `<div class="error">${esc(error)}</div>` : ''}
       ${
-        tab === 'daily'
-          ? `
-      <div class="card">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button class="btn secondary sm" data-day-shift="-1">‹</button>
-          <input type="date" id="report-day" value="${esc(dayStr)}" max="${new Date().toLocaleDateString('en-CA')}" />
-          <button class="btn secondary sm" data-day-shift="1">›</button>
-          <button class="btn secondary sm" data-day-today>Today</button>
-          <b style="margin-left:4px">${esc(prettyDay(dayStr))}</b>
-        </div>
-      </div>
-      ${
-        dayLoading || !d
+        loading || !data
           ? '<div class="card"><div class="empty">Loading…</div></div>'
-          : `${summaryCardsHTML(d)}${itemsTableHTML(d)}`
+          : `${summaryCardsHTML(data)}${itemsTableHTML(data)}`
       }
       <div class="card">
         <h2>Last 7 days</h2>
@@ -1440,47 +1466,52 @@ function ReportPage() {
               </table></div>
               <p class="sub" style="margin-bottom:0">Tap a day to see its item breakdown above.</p>`
         }
-      </div>`
-          : `
-      <p class="sub">Totals across all <b>completed</b> orders.</p>
-      ${
-        d
-          ? `${summaryCardsHTML(d)}${itemsTableHTML(d)}`
-          : '<div class="card"><div class="empty">Loading…</div></div>'
-      }`
-      }
+      </div>
     </div>`;
     wireTopBar();
 
-    root.querySelectorAll('[data-tab]').forEach((b) =>
+    root.querySelectorAll('[data-preset]').forEach((b) =>
       b.addEventListener('click', () => {
-        tab = b.dataset.tab;
-        if (tab === 'daily' && !dayData) loadDay();
-        else render();
+        mode = 'preset';
+        preset = b.dataset.preset;
+        loadStats();
       })
     );
-    const dayInput = document.getElementById('report-day');
+    const dayInput = document.getElementById('stats-day');
     if (dayInput)
       dayInput.addEventListener('change', () => {
         if (dayInput.value) {
+          mode = 'single';
           dayStr = dayInput.value;
-          loadDay();
+          loadStats();
         }
       });
-    root.querySelectorAll('[data-day-shift]').forEach((b) =>
-      b.addEventListener('click', () => shiftDay(Number(b.dataset.dayShift)))
-    );
-    const todayBtn = document.querySelector('[data-day-today]');
-    if (todayBtn)
-      todayBtn.addEventListener('click', () => {
-        dayStr = new Date().toLocaleDateString('en-CA');
-        loadDay();
+    const applyBtn = document.getElementById('stats-apply');
+    if (applyBtn)
+      applyBtn.addEventListener('click', () => {
+        const f = document.getElementById('stats-from').value;
+        const tt = document.getElementById('stats-to').value;
+        if (!f || !tt) {
+          error = 'Pick both From and To dates for a custom range.';
+          render();
+          return;
+        }
+        if (f > tt) {
+          error = 'The From date must be on or before the To date.';
+          render();
+          return;
+        }
+        mode = 'custom';
+        fromStr = f;
+        toStr = tt;
+        loadStats();
       });
     root.querySelectorAll('[data-day-jump]').forEach((tr) =>
       tr.addEventListener('click', () => {
+        mode = 'single';
         dayStr = tr.dataset.dayJump;
         window.scrollTo({ top: 0, behavior: 'smooth' });
-        loadDay();
+        loadStats();
       })
     );
   }
