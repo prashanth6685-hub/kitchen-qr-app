@@ -18,6 +18,7 @@ import {
 } from './sse.js';
 import { notifyOrderStatus } from './push.js';
 import { maybeSendReadySms } from './sms.js';
+import { applyCodeToLine, normalizeCode } from './discounts.js';
 import {
   createCheckoutSession,
   markOrderPaid,
@@ -32,7 +33,8 @@ const TRANSITIONS: Record<string, string[]> = {
   PAID: ['RECEIVED', 'CANCELLED'],
   RECEIVED: ['PREPARING', 'CANCELLED'],
   PREPARING: ['READY', 'CANCELLED'],
-  READY: ['COMPLETED', 'CANCELLED'],
+  READY: ['PARTIALLY_COMPLETED', 'COMPLETED', 'CANCELLED'],
+  PARTIALLY_COMPLETED: ['COMPLETED', 'CANCELLED'],
   COMPLETED: [],
   CANCELLED: [],
 };
@@ -60,11 +62,79 @@ interface OrderRow {
   updated_at: string;
 }
 
+interface OrderItemInput {
+  name: string;
+  qty: number;
+  unit_price_cents: number;
+  /** Manual per-line discount, flat cents (admin-entered). */
+  discount_cents?: number;
+  /** Discount code to apply to this line (validated + snapshotted). */
+  discount_code?: string | null;
+}
+
+interface OrderItemClean extends OrderItemInput {
+  name: string;
+  qty: number;
+  unit_price_cents: number;
+  discount_cents: number;
+  discount_code: string | null;
+  code_discount_cents: number;
+}
+
+function cleanItemsInput(items: any): OrderItemClean[] {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('At least one item is required');
+  }
+  const clean: OrderItemClean[] = [];
+  for (const it of items) {
+    const name = String(it.name || it.item_name || '').trim().slice(0, 120);
+    const qty = Math.floor(Number(it.qty ?? it.quantity));
+    const unit = Math.round(Number(it.unit_price ?? it.unit_price_cents));
+    if (!name || !Number.isFinite(qty) || qty < 1 || qty > 99) {
+      throw new Error('Each item needs a name and quantity 1–99');
+    }
+    if (!Number.isFinite(unit) || unit < 0 || unit > 1000000) {
+      throw new Error('Invalid item price');
+    }
+    const manual = Math.round(Number(it.discount_cents ?? 0));
+    if (!Number.isFinite(manual) || manual < 0) throw new Error('Invalid item discount');
+    const codeRaw = it.discount_code ? normalizeCode(String(it.discount_code)) : null;
+    let code: string | null = null;
+    let codeDisc = 0;
+    if (codeRaw) {
+      const applied = applyCodeToLine(codeRaw, name, qty, unit);
+      if (!applied.ok) throw new Error(applied.error);
+      code = applied.code!;
+      codeDisc = applied.code_discount_cents!;
+    }
+    const gross = qty * unit;
+    clean.push({
+      name, qty, unit_price_cents: unit,
+      discount_cents: Math.min(manual, gross),
+      discount_code: code,
+      code_discount_cents: codeDisc,
+    });
+  }
+  return clean;
+}
+
 function itemsFor(orderId: number) {
   return all(
-    'SELECT item_name, quantity, unit_price_cents, total_price_cents FROM order_items WHERE order_id = ?',
+    `SELECT item_name, quantity, unit_price_cents, total_price_cents,
+            discount_cents, discount_code, code_discount_cents
+     FROM order_items WHERE order_id = ?`,
     orderId
   );
+}
+
+/** Totals from a set of clean lines + the order-level discount (flat cents). */
+function computeTotals(lines: OrderItemClean[], orderDiscountCents: number) {
+  const itemsTotal = lines.reduce((s, i) => {
+    const gross = i.qty * i.unit_price_cents;
+    return s + gross - Math.min(i.discount_cents + i.code_discount_cents, gross);
+  }, 0);
+  const discount = Math.min(Math.max(0, orderDiscountCents), itemsTotal);
+  return { itemsTotal, discount_cents: discount, total_cents: itemsTotal - discount };
 }
 
 function nextOrderNumber(): number {
@@ -123,24 +193,14 @@ ordersRouter.post(
   async (req: AuthRequest, res) => {
     const { customer_name, customer_phone, special_instructions, counter_id, items } = req.body ?? {};
 
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'At least one item is required' });
-    }
-    const cleanItems: { name: string; qty: number; unit_price_cents: number }[] = [];
-    for (const it of items) {
-      const name = String(it.name || it.item_name || '').trim().slice(0, 120);
-      const qty = Math.floor(Number(it.qty ?? it.quantity));
-      const unit = Math.round(Number(it.unit_price ?? it.unit_price_cents));
-      if (!name || !Number.isFinite(qty) || qty < 1 || qty > 99) {
-        return res.status(400).json({ error: 'Each item needs a name and quantity 1–99' });
-      }
-      if (!Number.isFinite(unit) || unit < 0 || unit > 1000000) {
-        return res.status(400).json({ error: 'Invalid item price' });
-      }
-      cleanItems.push({ name, qty, unit_price_cents: unit });
+    let cleanItems: OrderItemClean[];
+    try {
+      cleanItems = cleanItemsInput(items);
+    } catch (e: any) {
+      return res.status(400).json({ error: e.message });
     }
 
-    const total = cleanItems.reduce((s, i) => s + i.qty * i.unit_price_cents, 0);
+    const { total_cents: total } = computeTotals(cleanItems, 0);
     if (total <= 0) return res.status(400).json({ error: 'Order total must be greater than zero' });
 
     const token = generatePublicToken();
@@ -166,12 +226,17 @@ ordersRouter.post(
     const orderId = Number(insert.lastInsertRowid);
     for (const i of cleanItems) {
       run(
-        'INSERT INTO order_items (order_id, item_name, quantity, unit_price_cents, total_price_cents) VALUES (?, ?, ?, ?, ?)',
+        `INSERT INTO order_items (order_id, item_name, quantity, unit_price_cents, total_price_cents,
+           discount_cents, discount_code, code_discount_cents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         orderId,
         i.name,
         i.qty,
         i.unit_price_cents,
-        i.qty * i.unit_price_cents
+        i.qty * i.unit_price_cents,
+        i.discount_cents,
+        i.discount_code,
+        i.code_discount_cents
       );
     }
     run(
@@ -296,16 +361,19 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
   notifyOrderStatus(order.id, updated.order_number, status, updated.public_token).catch((e) =>
     console.error('[orders] push notify failed', e)
   );
-  // Text the customer on READY — the user-friendly fallback for iPhones,
-  // where web push only works for Home-Screen-installed pages.
+  // Text the customer on READY / PARTIALLY_COMPLETED — the user-friendly
+  // fallback for iPhones, where web push only works for Home-Screen-installed pages.
   if (status === 'READY') {
     maybeSendReadySms(updated.order_number, updated.customer_phone);
+  } else if (status === 'PARTIALLY_COMPLETED') {
+    maybeSendReadySms(updated.order_number, updated.customer_phone, true);
   }
   res.json({ id: updated.id, order_status: updated.order_status, updated_at: ts });
 });
 
-// Admin: apply/change a discount (flat cents) while the order is still editable
-// (PENDING_PAYMENT, PAID or RECEIVED). Total is recalculated from items minus discount.
+// Admin: apply/change an order-level discount (flat cents) while the order is
+// still editable (PENDING_PAYMENT, PAID or RECEIVED). Total is recalculated
+// from items (net of per-item discounts) minus this discount.
 ordersRouter.patch('/:id/discount', requireRole('ADMIN'), (req: AuthRequest, res) => {
   const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
@@ -316,57 +384,52 @@ ordersRouter.patch('/:id/discount', requireRole('ADMIN'), (req: AuthRequest, res
   if (!Number.isFinite(discount) || discount < 0) {
     return res.status(400).json({ error: 'Invalid discount' });
   }
-  const itemsTotal = all<{ total_price_cents: number }>(
-    'SELECT total_price_cents FROM order_items WHERE order_id = ?',
+  const lines = all<{ quantity: number; unit_price_cents: number; discount_cents: number; code_discount_cents: number }>(
+    'SELECT quantity, unit_price_cents, discount_cents, code_discount_cents FROM order_items WHERE order_id = ?',
     order.id
-  ).reduce((s, i) => s + i.total_price_cents, 0);
-  const capped = Math.min(discount, itemsTotal);
+  ).map((l) => ({
+    name: '', qty: l.quantity, unit_price_cents: l.unit_price_cents,
+    discount_cents: l.discount_cents || 0, discount_code: null, code_discount_cents: l.code_discount_cents || 0,
+  }));
+  const { itemsTotal, discount_cents, total_cents } = computeTotals(lines, discount);
   const ts = now();
   run('UPDATE orders SET discount_cents = ?, total_cents = ?, updated_at = ? WHERE id = ?',
-    capped, itemsTotal - capped, ts, order.id);
+    discount_cents, total_cents, ts, order.id);
   const updated = row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id)!;
   broadcastOrderUpdate(updated);
-  res.json({ id: updated.id, discount_cents: updated.discount_cents, total_cents: updated.total_cents });
+  res.json({ id: updated.id, discount_cents: updated.discount_cents, total_cents: updated.total_cents, items_total_cents: itemsTotal });
 });
 
 // Admin: replace the order's items while it is still editable
 // (PENDING_PAYMENT, PAID or RECEIVED). Locked once the kitchen starts preparing.
+// Each line may carry a manual discount_cents and/or a discount_code.
 ordersRouter.patch('/:id/items', requireRole('ADMIN'), (req: AuthRequest, res) => {
   const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   if (!EDITABLE_STATUSES.includes(order.order_status)) {
     return res.status(409).json({ error: 'Order can no longer be edited — the kitchen has started preparing it' });
   }
-  const items = req.body?.items;
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ error: 'At least one item is required' });
+  let clean: OrderItemClean[];
+  try {
+    clean = cleanItemsInput(req.body?.items);
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
   }
-  const clean: { name: string; qty: number; unit: number }[] = [];
-  for (const it of items) {
-    const name = String(it.name || it.item_name || '').trim().slice(0, 120);
-    const qty = Math.floor(Number(it.qty ?? it.quantity));
-    const unit = Math.round(Number(it.unit_price ?? it.unit_price_cents));
-    if (!name || !Number.isFinite(qty) || qty < 1 || qty > 99) {
-      return res.status(400).json({ error: 'Each item needs a name and quantity 1–99' });
-    }
-    if (!Number.isFinite(unit) || unit < 0 || unit > 1000000) {
-      return res.status(400).json({ error: 'Invalid item price' });
-    }
-    clean.push({ name, qty, unit });
-  }
-  const itemsTotal = clean.reduce((s, i) => s + i.qty * i.unit, 0);
-  if (itemsTotal <= 0) return res.status(400).json({ error: 'Order total must be greater than zero' });
-  const discount = Math.min(order.discount_cents || 0, itemsTotal);
+  const { total_cents, discount_cents } = computeTotals(clean, order.discount_cents || 0);
+  if (total_cents <= 0) return res.status(400).json({ error: 'Order total must be greater than zero' });
   const ts = now();
   run('DELETE FROM order_items WHERE order_id = ?', order.id);
   for (const i of clean) {
     run(
-      'INSERT INTO order_items (order_id, item_name, quantity, unit_price_cents, total_price_cents) VALUES (?, ?, ?, ?, ?)',
-      order.id, i.name, i.qty, i.unit, i.qty * i.unit
+      `INSERT INTO order_items (order_id, item_name, quantity, unit_price_cents, total_price_cents,
+         discount_cents, discount_code, code_discount_cents)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      order.id, i.name, i.qty, i.unit_price_cents, i.qty * i.unit_price_cents,
+      i.discount_cents, i.discount_code, i.code_discount_cents
     );
   }
   run('UPDATE orders SET discount_cents = ?, total_cents = ?, updated_at = ? WHERE id = ?',
-    discount, itemsTotal - discount, ts, order.id);
+    discount_cents, total_cents, ts, order.id);
   run(
     'INSERT INTO order_status_history (order_id, old_status, new_status, changed_by) VALUES (?, ?, ?, ?)',
     order.id, order.order_status, order.order_status, req.user!.username + ' (items edited)'

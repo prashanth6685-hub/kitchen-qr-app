@@ -62,6 +62,22 @@ Customer phone                Counter staff              Kitchen display
   READY) are rejected.
 - **Customer privacy.** The public tracking page exposes no phone numbers —
   access is via an unguessable per-order token.
+- **Discounts are snapshots.** A discount code applied to an order line is
+  snapshotted (`discount_code`, `code_discount_cents`) onto that line — editing
+  or deleting the code later never rewrites history.
+
+## Discount codes
+
+- Admin page **Orders → Discounts** (`/staff/discounts`): create, edit,
+  publish/unpublish, and delete codes.
+- A code is either **$ off per item** (e.g. `BIRYANI5` = $5 off each Chicken
+  Biryani) or **% off** (e.g. `WELCOME10` = 10% off), and may be restricted to
+  one menu item (matched by name, case-insensitive) or valid on any item.
+- Inactive codes are unpublished — they stay in the list but can't be applied.
+- At payment time the admin sets a manual $ discount and/or applies a code per
+  item; the total is `items (net of per-item discounts) − order-level discount`.
+- API: `GET /api/discount-codes` · `POST /api/discount-codes/validate` ·
+  `POST / PUT / DELETE /api/discount-codes[/:id]` (admin)
 
 ## Quick start
 

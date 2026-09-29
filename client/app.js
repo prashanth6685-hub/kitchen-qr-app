@@ -90,11 +90,12 @@ const STATUS_LABELS = {
   RECEIVED: 'Order received',
   PREPARING: 'Preparing',
   READY: 'Ready',
+  PARTIALLY_COMPLETED: 'Partially completed',
   COMPLETED: 'Completed',
   CANCELLED: 'Cancelled',
 };
 
-const STATUS_STEPS = ['RECEIVED', 'PREPARING', 'READY', 'COMPLETED'];
+const STATUS_STEPS = ['RECEIVED', 'PREPARING', 'READY', 'PARTIALLY_COMPLETED', 'COMPLETED'];
 
 function timeOf(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -208,6 +209,7 @@ const routes = [
   { re: /^\/staff\/waitlist$/, page: StaffWaitlistPage, staff: true },
   { re: /^\/staff\/new$/, page: NewOrderPage, staff: true },
   { re: /^\/staff\/menu$/, page: MenuPage, staff: true },
+  { re: /^\/staff\/discounts$/, page: DiscountsPage, staff: true },
   { re: /^\/staff\/orders\/(\d+)$/, page: StaffOrderDetailPage, staff: true, params: ['id'] },
   { re: /^\/kitchen$/, page: KitchenDisplayPage, staff: true },
 ];
@@ -418,7 +420,7 @@ function LoginPage() {
 /* ------------------------- staff dashboard ------------------------- */
 
 const DASH_TABS = [
-  { id: 'pending', label: 'Pending', statuses: ['PENDING_PAYMENT', 'PAID', 'RECEIVED', 'PREPARING', 'READY'] },
+  { id: 'pending', label: 'Pending', statuses: ['PENDING_PAYMENT', 'PAID', 'RECEIVED', 'PREPARING', 'READY', 'PARTIALLY_COMPLETED'] },
   { id: 'completed', label: 'Completed', statuses: ['COMPLETED'] },
   { id: 'cancelled', label: 'Cancelled', statuses: ['CANCELLED'] },
 ];
@@ -524,6 +526,7 @@ function StaffDashboardPage() {
       <h1>Orders</h1>
       <div class="btn-row" style="margin:0">
         ${canOrder ? '<a class="btn secondary" href="/staff/menu">Menu</a>' : ''}
+        ${canOrder ? '<a class="btn secondary" href="/staff/discounts">Discounts</a>' : ''}
         ${canOrder ? '<a class="btn" href="/staff/new">New order</a>' : ''}
       </div>
     </div>
@@ -989,6 +992,281 @@ function MenuPage() {
   return () => {};
 }
 
+/* ------------------------- staff discount codes ------------------------- */
+
+function DiscountsPage() {
+  if (getViewRole() !== 'ADMIN') {
+    go('/staff');
+    return () => {};
+  }
+  let codes = [];
+  let menu = [];
+  let error = null;
+  let busy = false;
+  let notice = null;
+  let editingId = null;
+  let lastSig = '';
+
+  async function load() {
+    try {
+      const [dc, m] = await Promise.all([api('/api/discount-codes'), api('/api/menu')]);
+      error = null;
+      const sig = JSON.stringify(dc);
+      if (sig !== lastSig) {
+        lastSig = sig;
+        codes = dc;
+        menu = m;
+        render();
+      }
+    } catch (e) {
+      error = e.message;
+      render();
+    }
+  }
+
+  function showNotice(msg) {
+    notice = msg;
+    render();
+    window.setTimeout(() => {
+      notice = null;
+      const box = document.getElementById('dc-notice');
+      if (box) box.style.display = 'none';
+    }, 3000);
+  }
+
+  // Reads {code, label, menu_item_id, amount_cents, percent_off, active} from a
+  // form prefixed `pfx`. Returns null + sets error on invalid input.
+  function readForm(pfx) {
+    const code = document.getElementById(`${pfx}-code`).value.trim();
+    const label = document.getElementById(`${pfx}-label`).value.trim().slice(0, 120);
+    const itemSel = document.getElementById(`${pfx}-item`).value;
+    const type = document.getElementById(`${pfx}-type`).value;
+    const val = Number(document.getElementById(`${pfx}-val`).value);
+    const active = document.getElementById(`${pfx}-active`).checked;
+    if (!code) {
+      error = 'Enter a discount code.';
+      return null;
+    }
+    let amount_cents = null;
+    let percent_off = null;
+    if (type === 'fixed') {
+      amount_cents = Math.round(val * 100);
+      if (!Number.isFinite(amount_cents) || amount_cents <= 0) {
+        error = 'Enter a valid dollar amount.';
+        return null;
+      }
+    } else {
+      percent_off = Math.round(val);
+      if (!Number.isFinite(percent_off) || percent_off < 1 || percent_off > 100) {
+        error = 'Enter a percentage between 1 and 100.';
+        return null;
+      }
+    }
+    return {
+      code,
+      label,
+      menu_item_id: itemSel ? Number(itemSel) : null,
+      amount_cents,
+      percent_off,
+      active,
+    };
+  }
+
+  async function addCode() {
+    error = null;
+    const body = readForm('dc-new');
+    if (!body) {
+      render();
+      return;
+    }
+    busy = true;
+    render();
+    try {
+      await api('/api/discount-codes', { method: 'POST', body: JSON.stringify(body) });
+      busy = false;
+      lastSig = '';
+      showNotice(`Code ${body.code.toUpperCase()} added.`);
+      await load();
+    } catch (e) {
+      busy = false;
+      error = e.message;
+      render();
+    }
+  }
+
+  async function saveEdit(id) {
+    error = null;
+    const body = readForm(`dc-edit-${id}`);
+    if (!body) {
+      render();
+      return;
+    }
+    busy = true;
+    render();
+    try {
+      await api(`/api/discount-codes/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+      busy = false;
+      editingId = null;
+      lastSig = '';
+      showNotice('Discount code updated.');
+      await load();
+    } catch (e) {
+      busy = false;
+      error = e.message;
+      render();
+    }
+  }
+
+  async function toggleActive(id, active) {
+    busy = true;
+    render();
+    try {
+      await api(`/api/discount-codes/${id}`, { method: 'PUT', body: JSON.stringify({ active }) });
+      busy = false;
+      lastSig = '';
+      showNotice(active ? 'Code published.' : 'Code unpublished.');
+      await load();
+    } catch (e) {
+      busy = false;
+      error = e.message;
+      render();
+    }
+  }
+
+  async function deleteCode(id, code) {
+    if (!window.confirm(`Delete discount code "${code}"? Past orders keep their applied discounts.`)) return;
+    busy = true;
+    render();
+    try {
+      await api(`/api/discount-codes/${id}`, { method: 'DELETE' });
+      busy = false;
+      lastSig = '';
+      showNotice(`"${code}" deleted.`);
+      await load();
+    } catch (e) {
+      busy = false;
+      error = e.message;
+      render();
+    }
+  }
+
+  function itemOptions(selected) {
+    return `<option value="">Any item</option>` + menu
+      .map((m) => `<option value="${m.id}" ${m.id === selected ? 'selected' : ''}>${esc(m.name)}</option>`)
+      .join('');
+  }
+
+  function formFields(pfx, d) {
+    const code = d?.code ?? '';
+    const label = d?.label ?? '';
+    const sel = d?.menu_item_id ?? null;
+    const isFixed = d ? d.amount_cents != null : true;
+    const val = d ? (isFixed ? (d.amount_cents / 100).toFixed(2) : d.percent_off) : '';
+    const active = d ? d.active : true;
+    return `
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="${pfx}-code" placeholder="CODE (e.g. BIRYANI5)" autocapitalize="characters"
+          style="flex:1;min-width:120px;text-transform:uppercase" value="${esc(code)}" />
+        <input id="${pfx}-label" placeholder="Label (optional)" style="flex:1;min-width:140px" value="${esc(label)}" />
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <select id="${pfx}-item" style="flex:2;min-width:140px">${itemOptions(sel)}</select>
+        <select id="${pfx}-type" style="flex:1;min-width:110px">
+          <option value="fixed" ${isFixed ? 'selected' : ''}>$ off / item</option>
+          <option value="percent" ${isFixed ? '' : 'selected'}>% off</option>
+        </select>
+        <input id="${pfx}-val" placeholder="Amount" inputmode="decimal" style="flex:1;min-width:90px" value="${val}" />
+        <label class="sub" style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="${pfx}-active" ${active ? 'checked' : ''} /> Active
+        </label>
+      </div>`;
+  }
+
+  function codeDesc(d) {
+    const val = d.amount_cents != null ? `${money(d.amount_cents)} off` : `${d.percent_off}% off`;
+    return `${val} · ${d.menu_item_name ? esc(d.menu_item_name) : 'any item'}`;
+  }
+
+  function render() {
+    root.innerHTML = `
+    ${topBar()}
+    <div class="page">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <h1>Discount codes</h1>
+        <a class="btn secondary" href="/staff">← Orders</a>
+      </div>
+      ${error ? `<div class="error">${esc(error)}</div>` : ''}
+      <div class="ok" id="dc-notice" style="display:${notice ? 'block' : 'none'}">${esc(notice || '')}</div>
+      <p class="sub">Codes apply per item at payment time — e.g. <b>BIRYANI5</b> takes $5 off each Chicken Biryani. Uncheck "Active" to unpublish a code without deleting it.</p>
+
+      <div class="card">
+        <h2>Add code</h2>
+        ${formFields('dc-new')}
+        <div class="btn-row">
+          <button class="btn" id="dc-add" ${busy ? 'disabled' : ''}>${busy ? 'Adding…' : 'Add'}</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Codes (${codes.length})</h2>
+        ${codes.length === 0 ? '<div class="empty">No discount codes yet — add your first one above.</div>' : ''}
+        ${codes
+          .map((d) =>
+            editingId === d.id
+              ? `
+            <div style="margin-bottom:14px">
+              ${formFields(`dc-edit-${d.id}`, d)}
+              <div class="btn-row" style="margin:8px 0 0">
+                <button class="btn secondary" data-dc-save="${d.id}">Save</button>
+                <button class="btn secondary" data-dc-cancel>Cancel</button>
+              </div>
+            </div>`
+              : `
+            <div class="item-row" style="align-items:center">
+              <span>
+                <b>🏷 ${esc(d.code)}</b> ${d.active ? '' : '<span class="sub">(inactive)</span>'}<br />
+                <span class="sub">${codeDesc(d)}${d.label ? ` · ${esc(d.label)}` : ''}</span>
+              </span>
+              <span class="btn-row" style="margin:0">
+                <button class="btn secondary" data-dc-toggle="${d.id}" data-dc-active="${d.active ? 0 : 1}">${d.active ? 'Unpublish' : 'Publish'}</button>
+                <button class="btn secondary" data-dc-edit="${d.id}">Edit</button>
+                <button class="btn secondary" data-dc-del="${d.id}" data-dc-code="${esc(d.code)}">Delete</button>
+              </span>
+            </div>`
+          )
+          .join('')}
+      </div>
+    </div>`;
+    wireTopBar();
+
+    document.getElementById('dc-add').addEventListener('click', addCode);
+    root.querySelectorAll('[data-dc-edit]').forEach((b) =>
+      b.addEventListener('click', () => {
+        editingId = Number(b.dataset.dcEdit);
+        render();
+      })
+    );
+    root.querySelectorAll('[data-dc-cancel]').forEach((b) =>
+      b.addEventListener('click', () => {
+        editingId = null;
+        render();
+      })
+    );
+    root.querySelectorAll('[data-dc-save]').forEach((b) =>
+      b.addEventListener('click', () => saveEdit(Number(b.dataset.dcSave)))
+    );
+    root.querySelectorAll('[data-dc-toggle]').forEach((b) =>
+      b.addEventListener('click', () => toggleActive(Number(b.dataset.dcToggle), b.dataset.dcActive === '1'))
+    );
+    root.querySelectorAll('[data-dc-del]').forEach((b) =>
+      b.addEventListener('click', () => deleteCode(Number(b.dataset.dcDel), b.dataset.dcCode))
+    );
+  }
+
+  load();
+  return () => {};
+}
+
 /* ------------------------- staff order detail ------------------------- */
 
 function StaffOrderDetailPage({ id }) {
@@ -1000,6 +1278,7 @@ function StaffOrderDetailPage({ id }) {
   let editLines = null; // local editable copy of items (admin, pending orders only)
   let editNotes = null; // local editable copy of special instructions
   let discBusy = false;
+  let itemDisc = null; // local editable copy of per-item discounts (admin, at payment time)
 
   async function load() {
     try {
@@ -1011,6 +1290,7 @@ function StaffOrderDetailPage({ id }) {
         order = data;
         editLines = null; // re-init from fresh order data on render
         editNotes = null;
+        itemDisc = null;
         render();
       }
     } catch (e) {
@@ -1073,12 +1353,19 @@ function StaffOrderDetailPage({ id }) {
         name: it.item_name,
         qty: it.quantity,
         unit_price: it.unit_price_cents,
+        discount_cents: it.discount_cents || 0,
+        discount_code: it.discount_code || null,
+        code_discount_cents: it.code_discount_cents || 0,
       }));
     }
     return editLines || [];
   }
   function editTotal() {
-    return editInit().reduce((sum, l) => sum + l.qty * l.unit_price, 0);
+    return editInit().reduce((sum, l) => {
+      const gross = l.qty * l.unit_price;
+      const disc = (l.discount_cents || 0) + (l.code_discount_cents || 0);
+      return sum + gross - Math.min(disc, gross);
+    }, 0);
   }
 
   function editCardHTML() {
@@ -1122,11 +1409,59 @@ function StaffOrderDetailPage({ id }) {
       </div>`;
   }
 
+  // Per-item discounts (manual $ off + discount codes), editable at payment time.
+  function itemDiscInit() {
+    if (itemDisc === null && order) {
+      itemDisc = order.items.map((it) => ({
+        name: it.item_name,
+        qty: it.quantity,
+        unit: it.unit_price_cents,
+        manual: it.discount_cents || 0,
+        code: it.discount_code || null,
+        codeDisc: it.code_discount_cents || 0,
+        codeErr: null,
+      }));
+    }
+    return itemDisc || [];
+  }
+
   function discountHTML() {
     if (!isAdmin()) return '';
+    const lines = itemDiscInit();
     return `
         <div style="margin-top:14px;padding-top:12px;border-top:1px dashed #e5d9c8">
-          <h3 style="margin:0 0 8px">Discount</h3>
+          <h3 style="margin:0 0 8px">Item discounts</h3>
+          ${lines
+            .map(
+              (l, i) => `
+            <div style="margin-bottom:12px">
+              <div class="item-row" style="padding-bottom:2px">
+                <span>${esc(l.name)} <b>×${l.qty}</b></span>
+                <span>${money(l.qty * l.unit)}</span>
+              </div>
+              ${
+                l.code
+                  ? `<div class="item-row" style="padding-top:0;align-items:center">
+                       <span class="sub">🏷 ${esc(l.code)} −${money(l.codeDisc)}</span>
+                       <button class="btn secondary sm" data-disc-code-rm="${i}">Remove</button>
+                     </div>`
+                  : ''
+              }
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+                <input id="disc-manual-${i}" placeholder="$ off" inputmode="decimal"
+                  style="max-width:100px" value="${l.manual ? (l.manual / 100).toFixed(2) : ''}" />
+                <input id="disc-code-${i}" placeholder="CODE" autocapitalize="characters"
+                  style="max-width:120px;text-transform:uppercase" />
+                <button class="btn secondary sm" data-disc-code-apply="${i}" ${discBusy ? 'disabled' : ''}>Apply code</button>
+              </div>
+              ${l.codeErr ? `<div class="error" style="margin:6px 0 0">${esc(l.codeErr)}</div>` : ''}
+            </div>`
+            )
+            .join('')}
+          <div class="btn-row" style="margin-top:4px">
+            <button class="btn" id="disc-items-save" ${discBusy ? 'disabled' : ''}>${discBusy ? 'Saving…' : 'Save item discounts'}</button>
+          </div>
+          <h3 style="margin:14px 0 8px">Order discount</h3>
           ${order.discount_cents > 0 ? `<p class="sub">Current discount: <b>${money(order.discount_cents)}</b></p>` : ''}
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <input id="disc-amt" type="number" min="0" step="0.01" inputmode="decimal"
@@ -1136,6 +1471,32 @@ function StaffOrderDetailPage({ id }) {
             ${order.discount_cents > 0 ? '<button class="btn secondary" id="disc-clear">Remove</button>' : ''}
           </div>
         </div>`;
+  }
+
+  async function saveItemDiscounts() {
+    const lines = itemDiscInit().map((l, i) => {
+      const manualEl = document.getElementById(`disc-manual-${i}`);
+      const manual = manualEl ? Math.max(0, Math.round(Number(manualEl.value) * 100) || 0) : l.manual;
+      return {
+        name: l.name, qty: l.qty, unit_price: l.unit,
+        discount_cents: manual,
+        discount_code: l.code,
+      };
+    });
+    discBusy = true;
+    error = null;
+    render();
+    try {
+      await api(`/api/orders/${order.id}/items`, { method: 'PATCH', body: JSON.stringify({ items: lines }) });
+      discBusy = false;
+      itemDisc = null;
+      showNotice('Item discounts saved.');
+      await load();
+    } catch (e) {
+      discBusy = false;
+      error = e.message;
+      render();
+    }
   }
 
   function render() {
@@ -1168,14 +1529,23 @@ function StaffOrderDetailPage({ id }) {
         </div>
         ${order.items
           .map(
-            (it) => `
+            (it) => {
+              const lineDisc = (it.discount_cents || 0) + (it.code_discount_cents || 0);
+              return `
           <div class="item-row">
             <span>${esc(it.item_name)} <b>×${it.quantity}</b></span>
             <span>${money(it.total_price_cents)}</span>
-          </div>`
+          </div>${
+            lineDisc > 0
+              ? `<div class="item-row" style="padding-top:0"><span class="sub">${
+                  it.discount_code ? `🏷 ${esc(it.discount_code)}` : 'Item discount'
+                }</span><span class="sub">−${money(lineDisc)}</span></div>`
+              : ''
+          }`;
+            }
           )
           .join('')}
-        ${order.discount_cents > 0 ? `<div class="item-row"><span>Discount</span><span>−${money(order.discount_cents)}</span></div>` : ''}
+        ${order.discount_cents > 0 ? `<div class="item-row"><span>Order discount</span><span>−${money(order.discount_cents)}</span></div>` : ''}
         <div class="total-row"><span>Total</span><span>${money(order.total_cents)}</span></div>
         <div class="sub" style="margin-top:10px">
           ${order.customer_name ? `<div>Customer: ${esc(order.customer_name)}</div>` : ''}
@@ -1295,7 +1665,13 @@ function StaffOrderDetailPage({ id }) {
           await api(`/api/orders/${order.id}/items`, {
             method: 'PATCH',
             body: JSON.stringify({
-              items: lines.map((l) => ({ name: l.name, qty: l.qty, unit_price: l.unit_price })),
+              items: lines.map((l) => ({
+                name: l.name,
+                qty: l.qty,
+                unit_price: l.unit_price,
+                discount_cents: l.discount_cents || 0,
+                discount_code: l.discount_code || null,
+              })),
             }),
           });
           const notesVal = (document.getElementById('edit-notes')?.value ?? '').trim().slice(0, 500);
@@ -1312,6 +1688,64 @@ function StaffOrderDetailPage({ id }) {
           render();
         }
       });
+
+    // --- per-item discounts (admin, during payment) ---
+    const lines = itemDiscInit();
+    lines.forEach((l, i) => {
+      const manualEl = document.getElementById(`disc-manual-${i}`);
+      if (manualEl)
+        manualEl.addEventListener('input', () => {
+          const v = Math.max(0, Math.round(Number(manualEl.value) * 100) || 0);
+          itemDisc[i].manual = v;
+        });
+      const codeEl = document.getElementById(`disc-code-${i}`);
+      if (codeEl) codeEl.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); applyCodeBtn?.(i); }
+      });
+    });
+
+    async function applyCodeBtn(i) {
+      const codeEl = document.getElementById(`disc-code-${i}`);
+      const code = (codeEl?.value || '').trim();
+      if (!code) { showNotice('Enter a discount code.'); return; }
+      itemDisc[i].codeErr = null;
+      discBusy = true;
+      render();
+      try {
+        const res = await api('/api/discount-codes/validate', {
+          method: 'POST',
+          body: JSON.stringify({ code, item_name: itemDisc[i].name }),
+        });
+        // compute per-unit discount the same way the server does
+        const l = itemDisc[i];
+        const gross = l.qty * l.unit;
+        let disc = 0;
+        if (res.amount_cents != null) disc = res.amount_cents * l.qty;
+        else if (res.percent_off != null) disc = Math.round((gross * res.percent_off) / 100);
+        itemDisc[i].code = res.code;
+        itemDisc[i].codeDisc = Math.min(disc, gross);
+        itemDisc[i].codeErr = null;
+        showNotice(`Code ${res.code} applied — save item discounts to confirm.`);
+      } catch (e) {
+        itemDisc[i].codeErr = e.message;
+      }
+      discBusy = false;
+      render();
+    }
+
+    document.querySelectorAll('[data-disc-code-apply]').forEach((b) =>
+      b.addEventListener('click', () => applyCodeBtn(Number(b.getAttribute('data-disc-code-apply'))))
+    );
+    document.querySelectorAll('[data-disc-code-rm]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const i = Number(b.getAttribute('data-disc-code-rm'));
+        itemDisc[i].code = null;
+        itemDisc[i].codeDisc = 0;
+        saveItemDiscounts();
+      })
+    );
+    const discItemsSave = document.getElementById('disc-items-save');
+    if (discItemsSave) discItemsSave.addEventListener('click', saveItemDiscounts);
 
     // --- discount (admin, during payment) ---
     const discApply = document.getElementById('disc-apply');
@@ -1383,7 +1817,7 @@ function StaffOrderDetailPage({ id }) {
 
 /* ------------------------- kitchen display ------------------------- */
 
-const KITCHEN_ACTIVE = ['PAID', 'RECEIVED', 'PREPARING', 'READY'];
+const KITCHEN_ACTIVE = ['PAID', 'RECEIVED', 'PREPARING', 'READY', 'PARTIALLY_COMPLETED'];
 
 function KitchenDisplayPage() {
   const user = getUser();
@@ -1448,7 +1882,7 @@ function KitchenDisplayPage() {
             <div class="kcard ${esc(o.order_status)}" data-id="${o.id}">
               <div style="display:flex;justify-content:space-between;align-items:baseline">
                 <div class="num">#${o.order_number}</div>
-                <span class="badge ${esc(o.order_status)}">${esc(o.order_status)}</span>
+                <span class="badge ${esc(o.order_status)}">${esc(STATUS_LABELS[o.order_status] || o.order_status)}</span>
               </div>
               ${o.customer_name ? `<div class="sub">${esc(o.customer_name)}</div>` : ''}
               <div class="items">
@@ -1467,7 +1901,10 @@ function KitchenDisplayPage() {
                       : o.order_status === 'PREPARING'
                       ? `<button class="btn block" data-act="READY" ${busyId === o.id ? 'disabled' : ''}>✅ MARK READY</button>`
                       : o.order_status === 'READY'
-                      ? `<button class="btn secondary block" data-act="COMPLETED" ${busyId === o.id ? 'disabled' : ''}>Complete</button>`
+                      ? `<button class="btn secondary block" data-act="PARTIALLY_COMPLETED" ${busyId === o.id ? 'disabled' : ''}>🟡 Partially complete</button>
+                         <button class="btn block" data-act="COMPLETED" ${busyId === o.id ? 'disabled' : ''} style="margin-top:8px">✅ Fully complete</button>`
+                      : o.order_status === 'PARTIALLY_COMPLETED'
+                      ? `<button class="btn block" data-act="COMPLETED" ${busyId === o.id ? 'disabled' : ''}>✅ Fully complete</button>`
                       : ''
                   }
                 </div>`
@@ -1583,7 +2020,7 @@ function CustomerOrderPage({ token }) {
     }, 800);
   }
   function maybeReadyAlert(o) {
-    if (o && (o.order_status === 'READY' || o.order_status === 'COMPLETED') && !alertedReady) {
+    if (o && (o.order_status === 'READY' || o.order_status === 'PARTIALLY_COMPLETED' || o.order_status === 'COMPLETED') && !alertedReady) {
       alertedReady = true;
       readyAlert();
     }
@@ -1638,6 +2075,8 @@ function CustomerOrderPage({ token }) {
       ? 'Please contact the kitchen counter.'
       : order.order_status === 'READY'
       ? 'Please come to the counter to pick up your order.'
+      : order.order_status === 'PARTIALLY_COMPLETED'
+      ? 'Part of your order is ready — please come to the counter.'
       : order.order_status === 'COMPLETED'
       ? 'Thank you! Enjoy your meal.'
       : 'Estimated pickup: 10–15 minutes';
@@ -1646,6 +2085,8 @@ function CustomerOrderPage({ token }) {
       ? '❌ Cancelled'
       : order.order_status === 'READY'
       ? '🟢 READY'
+      : order.order_status === 'PARTIALLY_COMPLETED'
+      ? '🟡 PARTIALLY READY'
       : STATUS_LABELS[order.order_status] || order.order_status;
 
     let pushCard = '';
@@ -1687,7 +2128,7 @@ function CustomerOrderPage({ token }) {
         <span class="who">${live ? '● live' : '○ connecting…'}</span>
       </div>
 
-      <div class="card status-hero ${order.order_status === 'READY' ? 'READY' : ''}">
+      <div class="card status-hero ${order.order_status === 'READY' || order.order_status === 'PARTIALLY_COMPLETED' ? 'READY' : ''}">
         <div class="sub" style="margin:0">Order #${order.order_number}${
       order.customer_name ? ` · ${esc(order.customer_name)}` : ''
     }</div>

@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS orders (
   payment_status TEXT NOT NULL DEFAULT 'PENDING'
     CHECK (payment_status IN ('PENDING','PAID','FAILED','REFUNDED')),
   order_status TEXT NOT NULL DEFAULT 'PENDING_PAYMENT'
-    CHECK (order_status IN ('PENDING_PAYMENT','PAID','RECEIVED','PREPARING','READY','COMPLETED','CANCELLED')),
+    CHECK (order_status IN ('PENDING_PAYMENT','PAID','RECEIVED','PREPARING','READY','PARTIALLY_COMPLETED','COMPLETED','CANCELLED')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -72,9 +72,26 @@ CREATE TABLE IF NOT EXISTS order_items (
   item_name TEXT NOT NULL,
   quantity INTEGER NOT NULL,
   unit_price_cents INTEGER NOT NULL,
-  total_price_cents INTEGER NOT NULL
+  total_price_cents INTEGER NOT NULL,
+  discount_cents INTEGER NOT NULL DEFAULT 0,
+  discount_code TEXT,
+  code_discount_cents INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
+
+-- Admin-defined discount codes, optionally tied to one menu item.
+-- Exactly one of amount_cents / percent_off is set.
+CREATE TABLE IF NOT EXISTS discount_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  label TEXT,
+  menu_item_id INTEGER REFERENCES menu_items(id),
+  amount_cents INTEGER,
+  percent_off INTEGER,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

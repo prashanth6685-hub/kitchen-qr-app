@@ -37,12 +37,17 @@ export async function sendSms(to: string, body: string): Promise<void> {
   }
 }
 
-// Fire-and-forget: text the customer when their order is ready for pickup.
-export function maybeSendReadySms(orderNumber: number, customerPhone: string | null): void {
+// Fire-and-forget: text the customer when their order (or part of it) is ready.
+export function maybeSendReadySms(
+  orderNumber: number,
+  customerPhone: string | null,
+  partial = false
+): void {
   if (!smsConfigured) return;
   const to = normalizePhone(customerPhone);
   if (!to) return;
-  sendSms(to, `Your order #${orderNumber} is ready for pickup!`).catch((e) =>
-    console.error('[sms] send failed', e.message)
-  );
+  const body = partial
+    ? `Part of your order #${orderNumber} is ready for pickup!`
+    : `Your order #${orderNumber} is ready for pickup!`;
+  sendSms(to, body).catch((e) => console.error('[sms] send failed', e.message));
 }

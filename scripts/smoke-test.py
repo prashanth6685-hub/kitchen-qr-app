@@ -129,5 +129,76 @@ check("vapid key exposed", s == 200 and d["enabled"] and len(d["publicKey"]) > 4
 s, d = req("POST", "/api/notifications/subscribe", body={"token": ptoken, "subscription": {"endpoint": "https://example.com/x", "keys": {"p256dh": "a", "auth": "b"}}, "device_type": "test"})
 check("subscription saved", s == 200 and d["ok"], f"got {s} {d}")
 
+print("== partial completion ==")
+s, d = req("POST", "/api/orders", token=counter_tok, body={"items": [{"name": "Mango Lassi", "qty": 4, "unit_price": 449}]})
+oid3 = d["id"]
+s, d = req("POST", f"/api/orders/{oid3}/payments/demo", token=counter_tok)
+for st in ["RECEIVED", "PREPARING", "READY"]:
+    s, d = req("PATCH", f"/api/orders/{oid3}/status", token=kitchen_tok, body={"status": st})
+check("order at READY", s == 200 and d["order_status"] == "READY", f"got {s} {d}")
+s, d = req("PATCH", f"/api/orders/{oid3}/status", token=kitchen_tok, body={"status": "PARTIALLY_COMPLETED"})
+check("kitchen -> PARTIALLY_COMPLETED", s == 200 and d["order_status"] == "PARTIALLY_COMPLETED", f"got {s} {d}")
+s, d = req("GET", "/api/orders?status=PARTIALLY_COMPLETED", token=counter_tok)
+check("filter by PARTIALLY_COMPLETED", s == 200 and any(o["id"] == oid3 for o in d), f"got {s}")
+s, d = req("PATCH", f"/api/orders/{oid3}/status", token=kitchen_tok, body={"status": "READY"})
+check("PARTIALLY_COMPLETED -> READY rejected", s == 409, f"got {s}")
+s, d = req("PATCH", f"/api/orders/{oid3}/items", token=counter_tok, body={"items": [{"name": "Mango Lassi", "qty": 1, "unit_price": 449}]})
+check("items locked once partially completed", s == 409, f"got {s}")
+s, d = req("PATCH", f"/api/orders/{oid3}/status", token=kitchen_tok, body={"status": "COMPLETED"})
+check("PARTIALLY_COMPLETED -> COMPLETED", s == 200 and d["order_status"] == "COMPLETED", f"got {s} {d}")
+s, d = req("PATCH", f"/api/orders/{oid3}/status", token=kitchen_tok, body={"status": "CANCELLED"})
+check("kitchen cannot cancel from PARTIALLY_COMPLETED path", s == 403 or s == 409, f"got {s}")
+
+print("== discount codes ==")
+s, d = req("GET", "/api/discount-codes", token=counter_tok)
+check("seeded codes listed", s == 200 and any(c["code"] == "BIRYANI5" for c in d), f"got {s} {d}")
+s, d = req("GET", "/api/discount-codes")
+check("codes list requires login", s == 401, f"got {s}")
+s, d = req("POST", "/api/discount-codes/validate", token=counter_tok, body={"code": "biryani5", "item_name": "chicken biryani"})
+check("code validates case-insensitively", s == 200 and d["ok"] and d["amount_cents"] == 500, f"got {s} {d}")
+s, d = req("POST", "/api/discount-codes/validate", token=counter_tok, body={"code": "BIRYANI5", "item_name": "Garlic Naan"})
+check("code rejected for wrong item", s == 400, f"got {s} {d}")
+s, d = req("POST", "/api/discount-codes/validate", token=counter_tok, body={"code": "NOPE", "item_name": "Chicken Biryani"})
+check("unknown code rejected", s == 404, f"got {s} {d}")
+s, d = req("POST", "/api/discount-codes", token=kitchen_tok, body={"code": "PAV5", "amount_cents": 50})
+check("kitchen cannot create codes", s == 403, f"got {s}")
+s, d = req("POST", "/api/discount-codes", token=counter_tok, body={"code": "PAV5", "label": "50c off Vada Pav", "amount_cents": 50})
+check("admin creates code", s == 201 and d["code"] == "PAV5", f"got {s} {d}")
+pav_id = d["id"]
+s, d = req("POST", "/api/discount-codes", token=counter_tok, body={"code": "pav5", "amount_cents": 50})
+check("duplicate code rejected", s == 409, f"got {s}")
+s, d = req("PUT", f"/api/discount-codes/{pav_id}", token=counter_tok, body={"active": False})
+check("code unpublished", s == 200 and d["active"] == 0, f"got {s} {d}")
+s, d = req("POST", "/api/discount-codes/validate", token=counter_tok, body={"code": "PAV5", "item_name": "Vada Pav"})
+check("inactive code rejected", s == 400, f"got {s} {d}")
+s, d = req("PUT", f"/api/discount-codes/{pav_id}", token=counter_tok, body={"active": True, "amount_cents": 75})
+check("code edited", s == 200 and d["amount_cents"] == 75 and d["active"] == 1, f"got {s} {d}")
+
+print("== per-item discounts on orders ==")
+s, d = req("POST", "/api/orders", token=counter_tok, body={
+    "customer_name": "Priya",
+    "items": [
+        {"name": "Chicken Biryani", "qty": 2, "unit_price": 1299, "discount_code": "biryani5"},
+        {"name": "Garlic Naan", "qty": 2, "unit_price": 349, "discount_cents": 100},
+    ]})
+# biryani: 2*1299=2598 - 2*500=1598 ; naan: 2*349=698 - 100=598 ; total=2196
+check("order with per-item discounts totals", s == 201 and d["total_cents"] == 2196, f"got {s} {d}")
+oid4 = d["id"]
+s, d = req("GET", f"/api/orders/{oid4}", token=counter_tok)
+bir = next(i for i in d["items"] if i["item_name"] == "Chicken Biryani")
+check("code snapshotted on line", bir["discount_code"] == "BIRYANI5" and bir["code_discount_cents"] == 1000, str(bir))
+naan = next(i for i in d["items"] if i["item_name"] == "Garlic Naan")
+check("manual line discount stored", naan["discount_cents"] == 100 and naan["discount_code"] is None, str(naan))
+s, d = req("POST", "/api/orders", token=counter_tok, body={
+    "items": [{"name": "Garlic Naan", "qty": 1, "unit_price": 349, "discount_code": "BIRYANI5"}]})
+check("item-restricted code rejected on wrong item", s == 400, f"got {s} {d}")
+s, d = req("PATCH", f"/api/orders/{oid4}/discount", token=counter_tok, body={"discount_cents": 200})
+check("order-level discount stacks on net items", s == 200 and d["total_cents"] == 1996, f"got {s} {d}")
+s, d = req("DELETE", f"/api/discount-codes/{pav_id}", token=counter_tok)
+check("code deleted", s == 200, f"got {s}")
+s, d = req("GET", f"/api/orders/{oid4}", token=counter_tok)
+bir = next(i for i in d["items"] if i["item_name"] == "Chicken Biryani")
+check("history survives code deletion", bir["discount_code"] == "BIRYANI5" and bir["code_discount_cents"] == 1000, str(bir))
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

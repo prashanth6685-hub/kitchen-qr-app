@@ -78,6 +78,24 @@ if (menuCount === 0) {
   console.log('[seed] added sample menu items');
 }
 
+// --- Sample discount codes (only once) ---
+const dcCount = row<{ c: number }>('SELECT COUNT(*) AS c FROM discount_codes')!.c;
+if (dcCount === 0) {
+  const biryani = row<{ id: number }>('SELECT id FROM menu_items WHERE name = ?', 'Chicken Biryani');
+  const samples: [string, string, number | null, number | null, number | null][] = [
+    // code, label, menu_item_id, amount_cents, percent_off
+    ['BIRYANI5', '$5 off Chicken Biryani', biryani?.id ?? null, 500, null],
+    ['WELCOME10', '10% off anything', null, null, 10],
+  ];
+  for (const [code, label, menuItemId, amount, pct] of samples) {
+    run(
+      'INSERT INTO discount_codes (code, label, menu_item_id, amount_cents, percent_off) VALUES (?, ?, ?, ?, ?)',
+      code, label, menuItemId, amount, pct
+    );
+  }
+  console.log('[seed] added sample discount codes');
+}
+
 // --- Sensible .env defaults ---
 if (!process.env.PUBLIC_BASE_URL) ensureEnv('PUBLIC_BASE_URL', 'http://localhost:3000');
 if (!process.env.DEMO_PAYMENTS) ensureEnv('DEMO_PAYMENTS', 'true');

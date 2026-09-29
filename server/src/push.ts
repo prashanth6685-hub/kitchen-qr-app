@@ -63,6 +63,10 @@ const STATUS_MESSAGES: Record<string, { title: string; body: (n: number) => stri
     title: 'Order Ready 🎉',
     body: (n) => `Your order #${n} is ready for pickup!`,
   },
+  PARTIALLY_COMPLETED: {
+    title: 'Part of your order is ready 🟡',
+    body: (n) => `Part of your order #${n} is ready for pickup!`,
+  },
   COMPLETED: {
     title: 'Order Completed',
     body: (n) => `Thank you for your order #${n}!`,

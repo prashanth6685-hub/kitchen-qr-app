@@ -28,6 +28,62 @@ ensureColumn('locations', 'waitlist_prefix', "TEXT NOT NULL DEFAULT 'A'");
 ensureColumn('locations', 'avg_party_minutes', 'INTEGER NOT NULL DEFAULT 5');
 ensureColumn('locations', 'waitlist_enabled', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('orders', 'discount_cents', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('order_items', 'discount_cents', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('order_items', 'discount_code', 'TEXT');
+ensureColumn('order_items', 'code_discount_cents', 'INTEGER NOT NULL DEFAULT 0');
+// --- Migration: allow the PARTIALLY_COMPLETED order status.
+// SQLite cannot alter a CHECK constraint, so rebuild the orders table once
+// (data-preserving: copy into a new table, drop the old one, rename).
+// Child tables keep referencing `orders` by name, which still exists afterwards.
+{
+  const ddl =
+    (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").get() as
+      | { sql: string }
+      | undefined)?.sql || '';
+  if (!ddl.includes('PARTIALLY_COMPLETED')) {
+    const ORDER_COLS = [
+      'id', 'public_token', 'org_id', 'location_id', 'counter_id', 'order_number',
+      'customer_name', 'customer_phone', 'special_instructions', 'total_cents',
+      'discount_cents', 'currency', 'payment_status', 'order_status',
+      'created_at', 'updated_at',
+    ];
+    const cols = ORDER_COLS.join(', ');
+    db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      db.exec(`CREATE TABLE orders_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        public_token TEXT NOT NULL UNIQUE,
+        org_id INTEGER REFERENCES organizations(id),
+        location_id INTEGER REFERENCES locations(id),
+        counter_id INTEGER REFERENCES counters(id),
+        order_number INTEGER NOT NULL,
+        customer_name TEXT,
+        customer_phone TEXT,
+        special_instructions TEXT,
+        total_cents INTEGER NOT NULL,
+        discount_cents INTEGER NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'usd',
+        payment_status TEXT NOT NULL DEFAULT 'PENDING'
+          CHECK (payment_status IN ('PENDING','PAID','FAILED','REFUNDED')),
+        order_status TEXT NOT NULL DEFAULT 'PENDING_PAYMENT'
+          CHECK (order_status IN ('PENDING_PAYMENT','PAID','RECEIVED','PREPARING','READY','PARTIALLY_COMPLETED','COMPLETED','CANCELLED')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`);
+      db.exec(`INSERT INTO orders_new (${cols}) SELECT ${cols} FROM orders`);
+      db.exec('DROP TABLE orders');
+      db.exec('ALTER TABLE orders_new RENAME TO orders');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_orders_token ON orders(public_token)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(order_status)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at DESC)');
+      db.exec("DELETE FROM sqlite_sequence WHERE name = 'orders_new'");
+      db.exec("UPDATE sqlite_sequence SET seq = (SELECT MAX(id) FROM orders) WHERE name = 'orders'");
+    } finally {
+      db.exec('PRAGMA foreign_keys = ON');
+    }
+    console.log('[db] migrated orders table: PARTIALLY_COMPLETED status enabled');
+  }
+}
 // The COUNTER_STAFF role was merged into ADMIN: promote any existing counter
 // users so they keep access with the same username/password.
 db.exec(`UPDATE users SET role = 'ADMIN' WHERE role = 'COUNTER_STAFF'`);
