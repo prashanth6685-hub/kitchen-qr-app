@@ -207,6 +207,7 @@ const routes = [
   { re: /^\/staff$/, page: StaffDashboardPage, staff: true },
   { re: /^\/staff\/waitlist$/, page: StaffWaitlistPage, staff: true },
   { re: /^\/staff\/new$/, page: NewOrderPage, staff: true },
+  { re: /^\/staff\/menu$/, page: MenuPage, staff: true },
   { re: /^\/staff\/orders\/(\d+)$/, page: StaffOrderDetailPage, staff: true, params: ['id'] },
   { re: /^\/kitchen$/, page: KitchenDisplayPage, staff: true },
 ];
@@ -269,11 +270,11 @@ function topBar() {
   return `
   <div class="topbar">
     <div class="brand"><span>●</span> Kitchen Orders</div>
-    <nav>
-      <a class="link" href="/staff">Orders</a>
-      ${canOrder ? '<a class="link" href="/staff/new">+ New</a>' : ''}
-      <a class="link" href="/kitchen">Kitchen</a>
-      <a class="link" href="/staff/waitlist">Waitlist</a>
+    <nav class="mainnav">
+      <a class="nav-pill nav-orders" href="/staff">Orders</a>
+      ${canOrder ? '<a class="nav-pill nav-new" href="/staff/new">New</a>' : ''}
+      <a class="nav-pill nav-kitchen" href="/kitchen">Kitchen</a>
+      <a class="nav-pill nav-waitlist" href="/staff/waitlist">Waitlist</a>
       <div class="menu-wrap">
         <button class="user-chip" id="user-chip" aria-haspopup="true">
           <span class="avatar">${initial}</span>
@@ -350,10 +351,13 @@ function HomePage() {
   wireTopBar();
 }
 
+const LOGIN_HEROES = ['/img/login-hero.jpg', '/img/login-hero-2.jpg', '/img/login-hero-3.jpg', '/img/login-hero-4.jpg'];
+
 function LoginPage() {
+  const hero = LOGIN_HEROES[Math.floor(Math.random() * LOGIN_HEROES.length)];
   root.innerHTML = `
   <div class="login-wrap">
-    <div class="login-hero">
+    <div class="login-hero" style="background-image:url('${hero}')">
       <div class="tag">
         <h2>From order to table,<br>without the chaos.</h2>
         <p>Live kitchen display, QR ordering & table waitlist â all in one place.</p>
@@ -413,32 +417,43 @@ function LoginPage() {
 
 /* ------------------------- staff dashboard ------------------------- */
 
-const DASH_FILTERS = ['ALL', 'PENDING_PAYMENT', 'PAID', 'RECEIVED', 'PREPARING', 'READY', 'COMPLETED', 'CANCELLED'];
+const DASH_TABS = [
+  { id: 'pending', label: 'Pending', statuses: ['PENDING_PAYMENT', 'PAID', 'RECEIVED', 'PREPARING', 'READY'] },
+  { id: 'completed', label: 'Completed', statuses: ['COMPLETED'] },
+  { id: 'cancelled', label: 'Cancelled', statuses: ['CANCELLED'] },
+];
 
 function StaffDashboardPage() {
   const user = getUser();
   const canOrder = getViewRole() === 'ADMIN';
   let orders = [];
-  let filter = 'ALL';
+  let tab = 'pending';
   let q = '';
   let error = null;
   let debounce = null;
   let lastSig = '';
 
+  function tabStatuses(id) {
+    return (DASH_TABS.find((t) => t.id === id) || DASH_TABS[0]).statuses;
+  }
+
   async function load() {
     try {
       const params = new URLSearchParams();
-      if (filter !== 'ALL') params.set('status', filter);
+      params.set('limit', '200');
       if (q.trim()) params.set('q', q.trim());
-      orders = await api(`/api/orders?${params}`);
+      const all = await api(`/api/orders?${params}`);
+      const want = tabStatuses(tab);
+      orders = all.filter((o) => want.includes(o.order_status));
       error = null;
     } catch (e) {
       error = e.message;
     }
-    const sig = JSON.stringify({ orders, error });
+    const sig = JSON.stringify({ orders, error, tab });
     if (sig !== lastSig) {
       lastSig = sig;
       renderList();
+      renderTabs();
     }
   }
 
@@ -473,18 +488,30 @@ function StaffDashboardPage() {
     });
   }
 
-  function renderChips() {
+  async function tabCounts() {
+    try {
+      const all = await api('/api/orders?limit=200');
+      const counts = {};
+      for (const t of DASH_TABS) counts[t.id] = all.filter((o) => t.statuses.includes(o.order_status)).length;
+      return counts;
+    } catch {
+      return {};
+    }
+  }
+
+  async function renderTabs() {
     const bar = document.getElementById('filter-chips');
-    bar.innerHTML = DASH_FILTERS.map(
-      (f) =>
-        `<button class="chip${filter === f ? ' active' : ''}" data-f="${f}">${
-          f === 'ALL' ? 'All' : esc(f.replace('_', ' '))
-        }</button>`
+    if (!bar) return;
+    const counts = await tabCounts();
+    bar.className = 'tabs';
+    bar.innerHTML = DASH_TABS.map(
+      (t) =>
+        `<button class="tab${tab === t.id ? ' active' : ''}" data-t="${t.id}">${esc(t.label)}<span class="count">${counts[t.id] ?? ''}</span></button>`
     ).join('');
     bar.querySelectorAll('button').forEach((b) => {
       b.addEventListener('click', () => {
-        filter = b.dataset.f;
-        renderChips();
+        tab = b.dataset.t;
+        lastSig = '';
         load();
       });
     });
@@ -495,7 +522,10 @@ function StaffDashboardPage() {
   <div class="page wide">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <h1>Orders</h1>
-      ${canOrder ? '<a class="btn" href="/staff/new">+ New order</a>' : ''}
+      <div class="btn-row" style="margin:0">
+        ${canOrder ? '<a class="btn secondary" href="/staff/menu">Menu</a>' : ''}
+        ${canOrder ? '<a class="btn" href="/staff/new">New order</a>' : ''}
+      </div>
     </div>
     <div class="filterbar">
       <input class="search" id="dash-q" placeholder="Search name or order #…" />
@@ -504,7 +534,7 @@ function StaffDashboardPage() {
     <div class="card" style="padding:8px"><div id="orders-list"></div></div>
   </div>`;
   wireTopBar();
-  renderChips();
+  renderTabs();
 
   document.getElementById('dash-q').addEventListener('input', (e) => {
     q = e.target.value;
@@ -773,6 +803,192 @@ function NewOrderPage() {
   init();
 }
 
+/* ------------------------- menu management (admin) ------------------------- */
+
+function MenuPage() {
+  if (getViewRole() !== 'ADMIN') {
+    go('/staff');
+    return () => {};
+  }
+  let items = [];
+  let error = null;
+  let busy = false;
+  let notice = null;
+  let editingId = null;
+  let lastSig = '';
+
+  async function load() {
+    try {
+      const data = await api('/api/menu');
+      error = null;
+      const sig = JSON.stringify(data);
+      if (sig !== lastSig) {
+        lastSig = sig;
+        items = data;
+        render();
+      }
+    } catch (e) {
+      error = e.message;
+      render();
+    }
+  }
+
+  function showNotice(msg) {
+    notice = msg;
+    render();
+    window.setTimeout(() => {
+      notice = null;
+      const box = document.getElementById('menu-notice');
+      if (box) box.style.display = 'none';
+    }, 3000);
+  }
+
+  async function addItem() {
+    const nameEl = document.getElementById('menu-new-name');
+    const priceEl = document.getElementById('menu-new-price');
+    const name = nameEl.value.trim().slice(0, 120);
+    const price = Math.round(Number(priceEl.value) * 100);
+    if (!name || !Number.isFinite(price) || price < 0) {
+      error = 'Enter an item name and a valid price.';
+      render();
+      return;
+    }
+    busy = true;
+    error = null;
+    render();
+    try {
+      await api('/api/menu', { method: 'POST', body: JSON.stringify({ name, price_cents: price }) });
+      busy = false;
+      lastSig = '';
+      showNotice(`"${name}" added to the menu.`);
+      await load();
+    } catch (e) {
+      busy = false;
+      error = e.message;
+      render();
+    }
+  }
+
+  async function saveEdit(id) {
+    const nameEl = document.getElementById(`menu-edit-name-${id}`);
+    const priceEl = document.getElementById(`menu-edit-price-${id}`);
+    const name = nameEl.value.trim().slice(0, 120);
+    const price = Math.round(Number(priceEl.value) * 100);
+    if (!name || !Number.isFinite(price) || price < 0) {
+      error = 'Enter a valid name and price.';
+      render();
+      return;
+    }
+    busy = true;
+    error = null;
+    render();
+    try {
+      await api(`/api/menu/${id}`, { method: 'PUT', body: JSON.stringify({ name, price_cents: price }) });
+      busy = false;
+      editingId = null;
+      lastSig = '';
+      showNotice('Menu item updated.');
+      await load();
+    } catch (e) {
+      busy = false;
+      error = e.message;
+      render();
+    }
+  }
+
+  async function deleteItem(id, name) {
+    if (!window.confirm(`Remove "${name}" from the menu?`)) return;
+    busy = true;
+    render();
+    try {
+      await api(`/api/menu/${id}`, { method: 'DELETE' });
+      busy = false;
+      lastSig = '';
+      showNotice(`"${name}" removed.`);
+      await load();
+    } catch (e) {
+      busy = false;
+      error = e.message;
+      render();
+    }
+  }
+
+  function render() {
+    root.innerHTML = `
+    ${topBar()}
+    <div class="page">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <h1>Menu</h1>
+        <a class="btn secondary" href="/staff">← Orders</a>
+      </div>
+      ${error ? `<div class="error">${esc(error)}</div>` : ''}
+      <div class="ok" id="menu-notice" style="display:${notice ? 'block' : 'none'}">${esc(notice || '')}</div>
+
+      <div class="card">
+        <h2>Add item</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="menu-new-name" placeholder="Item name" style="flex:2;min-width:140px" />
+          <input id="menu-new-price" placeholder="$0.00" inputmode="decimal" style="flex:1;min-width:100px" />
+          <button class="btn" id="menu-add" ${busy ? 'disabled' : ''}>${busy ? 'Adding…' : 'Add'}</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Items (${items.length})</h2>
+        ${items.length === 0 ? '<div class="empty">No menu items yet — add your first one above.</div>' : ''}
+        ${items
+          .map((m) =>
+            editingId === m.id
+              ? `
+            <div class="item-row" style="align-items:center">
+              <span style="flex:2;display:flex;gap:8px">
+                <input id="menu-edit-name-${m.id}" value="${esc(m.name)}" style="flex:2" />
+                <input id="menu-edit-price-${m.id}" value="${(m.price / 100).toFixed(2)}" inputmode="decimal" style="flex:1;max-width:110px" />
+              </span>
+              <span class="btn-row" style="margin:0">
+                <button class="btn secondary" data-menu-save="${m.id}">Save</button>
+                <button class="btn secondary" data-menu-cancel>Cancel</button>
+              </span>
+            </div>`
+              : `
+            <div class="item-row" style="align-items:center">
+              <span><b>${esc(m.name)}</b> <span class="sub">${money(m.price)}</span></span>
+              <span class="btn-row" style="margin:0">
+                <button class="btn secondary" data-menu-edit="${m.id}">Edit</button>
+                <button class="btn secondary" data-menu-del="${m.id}" data-menu-name="${esc(m.name)}">Delete</button>
+              </span>
+            </div>`
+          )
+          .join('')}
+      </div>
+    </div>`;
+    wireTopBar();
+
+    document.getElementById('menu-add').addEventListener('click', addItem);
+    root.querySelectorAll('[data-menu-edit]').forEach((b) =>
+      b.addEventListener('click', () => {
+        editingId = Number(b.dataset.menuEdit);
+        render();
+      })
+    );
+    root.querySelectorAll('[data-menu-cancel]').forEach((b) =>
+      b.addEventListener('click', () => {
+        editingId = null;
+        render();
+      })
+    );
+    root.querySelectorAll('[data-menu-save]').forEach((b) =>
+      b.addEventListener('click', () => saveEdit(Number(b.dataset.menuSave)))
+    );
+    root.querySelectorAll('[data-menu-del]').forEach((b) =>
+      b.addEventListener('click', () => deleteItem(Number(b.dataset.menuDel), b.dataset.menuName))
+    );
+  }
+
+  load();
+  return () => {};
+}
+
 /* ------------------------- staff order detail ------------------------- */
 
 function StaffOrderDetailPage({ id }) {
@@ -781,6 +997,8 @@ function StaffOrderDetailPage({ id }) {
   let busy = false;
   let notice = null;
   let lastSig = '';
+  let editLines = null; // local editable copy of items (admin, pending orders only)
+  let discBusy = false;
 
   async function load() {
     try {
@@ -790,6 +1008,7 @@ function StaffOrderDetailPage({ id }) {
       if (sig !== lastSig) {
         lastSig = sig;
         order = data;
+        editLines = null; // re-init from fresh order data on render
         render();
       }
     } catch (e) {
@@ -843,6 +1062,77 @@ function StaffOrderDetailPage({ id }) {
     }
   }
 
+  const isAdmin = () => getViewRole() === 'ADMIN';
+  const editable = () => isAdmin() && order && ['PENDING_PAYMENT', 'PAID'].includes(order.order_status);
+
+  function editInit() {
+    if (editLines === null && order) {
+      editLines = order.items.map((it) => ({
+        name: it.item_name,
+        qty: it.quantity,
+        unit_price: it.unit_price_cents,
+      }));
+    }
+    return editLines || [];
+  }
+  function editTotal() {
+    return editInit().reduce((sum, l) => sum + l.qty * l.unit_price, 0);
+  }
+
+  function editCardHTML() {
+    if (!editable()) {
+      return order && isAdmin() && !['PENDING_PAYMENT', 'PAID', 'CANCELLED'].includes(order.order_status)
+        ? '<div class="card"><div class="info">🔒 This order is with the kitchen — items can no longer be edited.</div></div>'
+        : '';
+    }
+    const lines = editInit();
+    return `
+      <div class="card">
+        <h2>Edit items</h2>
+        <div id="edit-lines">
+          ${lines
+            .map(
+              (l, i) => `
+            <div class="item-row">
+              <span>${esc(l.name)} <span class="sub">${money(l.unit_price)} each</span></span>
+              <span class="qty">
+                <button data-edit-dec="${i}" aria-label="decrease">−</button>
+                <b>${l.qty}</b>
+                <button data-edit-inc="${i}" aria-label="increase">+</button>
+                <button data-edit-del="${i}" aria-label="remove" style="margin-left:6px">×</button>
+              </span>
+            </div>`
+            )
+            .join('') || '<div class="empty">No items.</div>'}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <input id="edit-add-name" placeholder="Item name" style="flex:2;min-width:120px" />
+          <input id="edit-add-price" placeholder="$0.00" inputmode="decimal" style="flex:1;min-width:90px" />
+          <button class="btn secondary" id="edit-add">Add</button>
+        </div>
+        <div class="btn-row" style="margin-top:12px;align-items:center">
+          <button class="btn" id="edit-save" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : 'Save changes'}</button>
+          <span class="sub">New total: <b>${money(Math.max(0, editTotal() - (order.discount_cents || 0)))}</b></span>
+        </div>
+      </div>`;
+  }
+
+  function discountHTML() {
+    if (!isAdmin()) return '';
+    return `
+        <div style="margin-top:14px;padding-top:12px;border-top:1px dashed #e5d9c8">
+          <h3 style="margin:0 0 8px">Discount</h3>
+          ${order.discount_cents > 0 ? `<p class="sub">Current discount: <b>${money(order.discount_cents)}</b></p>` : ''}
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input id="disc-amt" type="number" min="0" step="0.01" inputmode="decimal"
+              placeholder="$0.00" style="max-width:140px"
+              value="${order.discount_cents ? (order.discount_cents / 100).toFixed(2) : ''}" />
+            <button class="btn secondary" id="disc-apply" ${discBusy ? 'disabled' : ''}>${discBusy ? 'Applying…' : 'Apply discount'}</button>
+            ${order.discount_cents > 0 ? '<button class="btn secondary" id="disc-clear">Remove</button>' : ''}
+          </div>
+        </div>`;
+  }
+
   function render() {
     if (error && !order) {
       root.innerHTML = `${topBar()}<div class="page"><div class="error">${esc(error)}</div></div>`;
@@ -867,9 +1157,9 @@ function StaffOrderDetailPage({ id }) {
       <div class="ok" id="detail-notice" style="display:${notice ? 'block' : 'none'}">${esc(notice || '')}</div>
 
       <div class="card">
-        <div class="btn-row" style="margin-top:0;margin-bottom:12px">
-          <span class="badge ${esc(order.order_status)}">${esc(order.order_status.replace('_', ' '))}</span>
-          <span class="badge ${paid ? 'READY' : 'PENDING_PAYMENT'}">${paid ? 'PAID' : esc(order.payment_status)}</span>
+        <div class="btn-row" style="margin-top:0;margin-bottom:12px;align-items:center">
+          <span class="badge ${esc(order.order_status)}" style="font-size:16px;padding:8px 18px">${esc(STATUS_LABELS[order.order_status] || order.order_status)}</span>
+          <span class="sub">${paid ? '✅ Paid' : '⏳ Unpaid'}</span>
         </div>
         ${order.items
           .map(
@@ -880,6 +1170,7 @@ function StaffOrderDetailPage({ id }) {
           </div>`
           )
           .join('')}
+        ${order.discount_cents > 0 ? `<div class="item-row"><span>Discount</span><span>−${money(order.discount_cents)}</span></div>` : ''}
         <div class="total-row"><span>Total</span><span>${money(order.total_cents)}</span></div>
         <div class="sub" style="margin-top:10px">
           ${order.customer_name ? `<div>Customer: ${esc(order.customer_name)}</div>` : ''}
@@ -888,6 +1179,8 @@ function StaffOrderDetailPage({ id }) {
           <div>Created: ${esc(new Date(order.created_at).toLocaleString())}</div>
         </div>
       </div>
+
+      ${editCardHTML()}
 
       ${
         !paid
@@ -904,6 +1197,7 @@ function StaffOrderDetailPage({ id }) {
           Card payments via Stripe Checkout open automatically when Stripe keys are configured. Demo payments are
           for testing only and must be disabled in production (DEMO_PAYMENTS=false).
         </p>
+        ${discountHTML()}
       </div>`
           : `
       ${order.order_status === 'PAID' ? `<div class="card"><div class="info">💡 Next step: open the <a class="link" href="/kitchen">Kitchen page</a> and tap <b>Accept order</b> to start preparing it.</div></div>` : ''}
@@ -945,6 +1239,112 @@ function StaffOrderDetailPage({ id }) {
     if (printBtn) printBtn.addEventListener('click', () => window.print());
     const copyBtn = document.getElementById('qr-copy');
     if (copyBtn) copyBtn.addEventListener('click', copyLink);
+
+    // --- edit items (admin, pending orders only) ---
+    root.querySelectorAll('[data-edit-inc]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const l = editInit()[Number(b.dataset.editInc)];
+        if (l && l.qty < 99) l.qty++;
+        render();
+      })
+    );
+    root.querySelectorAll('[data-edit-dec]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const l = editInit()[Number(b.dataset.editDec)];
+        if (l && l.qty > 1) l.qty--;
+        render();
+      })
+    );
+    root.querySelectorAll('[data-edit-del]').forEach((b) =>
+      b.addEventListener('click', () => {
+        editInit().splice(Number(b.dataset.editDel), 1);
+        render();
+      })
+    );
+    const addBtn = document.getElementById('edit-add');
+    if (addBtn)
+      addBtn.addEventListener('click', () => {
+        const name = document.getElementById('edit-add-name').value.trim().slice(0, 120);
+        const price = Math.round(Number(document.getElementById('edit-add-price').value) * 100);
+        if (!name || !Number.isFinite(price) || price < 0) {
+          showNotice('Enter an item name and price to add it.');
+          return;
+        }
+        editInit().push({ name, qty: 1, unit_price: price });
+        render();
+      });
+    const saveBtn = document.getElementById('edit-save');
+    if (saveBtn)
+      saveBtn.addEventListener('click', async () => {
+        const lines = editInit();
+        if (lines.length === 0) {
+          showNotice('An order needs at least one item.');
+          return;
+        }
+        busy = true;
+        error = null;
+        render();
+        try {
+          await api(`/api/orders/${order.id}/items`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              items: lines.map((l) => ({ name: l.name, qty: l.qty, unit_price: l.unit_price })),
+            }),
+          });
+          busy = false;
+          showNotice('Order updated.');
+          await load();
+        } catch (e) {
+          busy = false;
+          error = e.message;
+          render();
+        }
+      });
+
+    // --- discount (admin, during payment) ---
+    const discApply = document.getElementById('disc-apply');
+    if (discApply)
+      discApply.addEventListener('click', async () => {
+        const amt = Math.round(Number(document.getElementById('disc-amt').value) * 100);
+        if (!Number.isFinite(amt) || amt < 0) {
+          showNotice('Enter a valid discount amount.');
+          return;
+        }
+        discBusy = true;
+        render();
+        try {
+          await api(`/api/orders/${order.id}/discount`, {
+            method: 'PATCH',
+            body: JSON.stringify({ discount_cents: amt }),
+          });
+          discBusy = false;
+          showNotice(amt > 0 ? 'Discount applied.' : 'Discount removed.');
+          await load();
+        } catch (e) {
+          discBusy = false;
+          error = e.message;
+          render();
+        }
+      });
+    const discClear = document.getElementById('disc-clear');
+    if (discClear)
+      discClear.addEventListener('click', async () => {
+        discBusy = true;
+        render();
+        try {
+          await api(`/api/orders/${order.id}/discount`, {
+            method: 'PATCH',
+            body: JSON.stringify({ discount_cents: 0 }),
+          });
+          discBusy = false;
+          showNotice('Discount removed.');
+          await load();
+        } catch (e) {
+          discBusy = false;
+          error = e.message;
+          render();
+        }
+      });
   }
 
   load();
@@ -1097,6 +1497,7 @@ function KitchenDisplayPage() {
 function CustomerOrderPage({ token }) {
   let order = null;
   let error = null;
+  let alertedReady = false;
   let pushState = 'available';
   let pushMsg = null;
   let pushBusy = false;
@@ -1121,6 +1522,7 @@ function CustomerOrderPage({ token }) {
       if (sig !== lastSig) {
         lastSig = sig;
         order = data;
+        maybeReadyAlert(order);
         render();
       }
     } catch (e) {
@@ -1128,6 +1530,50 @@ function CustomerOrderPage({ token }) {
         error = e.message;
         render();
       }
+    }
+  }
+
+  // In-page "order ready" alert — chime + vibration + flashing title when the
+  // page is open, even if push notifications are blocked or unsupported.
+  function readyAlert() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        const ctx = new AC();
+        const now = ctx.currentTime;
+        [523.25, 783.99, 1046.5].forEach((freq, i) => {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.type = 'sine';
+          o.frequency.value = freq;
+          const t = now + i * 0.22;
+          g.gain.setValueAtTime(0.0001, t);
+          g.gain.exponentialRampToValueAtTime(0.5, t + 0.04);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+          o.connect(g);
+          g.connect(ctx.destination);
+          o.start(t);
+          o.stop(t + 0.65);
+        });
+      }
+    } catch {}
+    try {
+      if (navigator.vibrate) navigator.vibrate([250, 120, 250, 120, 500]);
+    } catch {}
+    const orig = document.title;
+    let n = 0;
+    const iv = window.setInterval(() => {
+      document.title = n % 2 ? orig : '🔔 YOUR ORDER IS READY!';
+      if (++n > 13) {
+        window.clearInterval(iv);
+        document.title = orig;
+      }
+    }, 800);
+  }
+  function maybeReadyAlert(o) {
+    if (o && (o.order_status === 'READY' || o.order_status === 'COMPLETED') && !alertedReady) {
+      alertedReady = true;
+      readyAlert();
     }
   }
 
@@ -1141,6 +1587,7 @@ function CustomerOrderPage({ token }) {
       updated_at: u.updated_at,
     };
     lastSig = JSON.stringify(order);
+    maybeReadyAlert(order);
     render();
   }
 

@@ -47,6 +47,7 @@ interface OrderRow {
   customer_phone: string | null;
   special_instructions: string | null;
   total_cents: number;
+  discount_cents: number;
   currency: string;
   payment_status: string;
   order_status: string;
@@ -83,6 +84,7 @@ ordersRouter.get('/token/:token', (req, res) => {
     customer_name: order.customer_name,
     special_instructions: order.special_instructions,
     total_cents: order.total_cents,
+    discount_cents: order.discount_cents || 0,
     currency: order.currency,
     created_at: order.created_at,
     updated_at: order.updated_at,
@@ -222,6 +224,7 @@ ordersRouter.get('/', (req: AuthRequest, res) => {
       order_status: o.order_status,
       payment_status: o.payment_status,
       total_cents: o.total_cents,
+    discount_cents: o.discount_cents || 0,
       created_at: o.created_at,
       item_count: row<{ c: number }>(
         'SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?',
@@ -289,6 +292,78 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
     console.error('[orders] push notify failed', e)
   );
   res.json({ id: updated.id, order_status: updated.order_status, updated_at: ts });
+});
+
+// Admin: apply/change a discount (flat cents) while the order is still editable
+// (PENDING_PAYMENT or PAID). Total is recalculated from items minus discount.
+ordersRouter.patch('/:id/discount', requireRole('ADMIN'), (req: AuthRequest, res) => {
+  const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (!['PENDING_PAYMENT', 'PAID'].includes(order.order_status)) {
+    return res.status(409).json({ error: 'Order can no longer be discounted — the kitchen is already working on it' });
+  }
+  const discount = Math.round(Number(req.body?.discount_cents));
+  if (!Number.isFinite(discount) || discount < 0) {
+    return res.status(400).json({ error: 'Invalid discount' });
+  }
+  const itemsTotal = all<{ total_price_cents: number }>(
+    'SELECT total_price_cents FROM order_items WHERE order_id = ?',
+    order.id
+  ).reduce((s, i) => s + i.total_price_cents, 0);
+  const capped = Math.min(discount, itemsTotal);
+  const ts = now();
+  run('UPDATE orders SET discount_cents = ?, total_cents = ?, updated_at = ? WHERE id = ?',
+    capped, itemsTotal - capped, ts, order.id);
+  const updated = row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id)!;
+  broadcastOrderUpdate(updated);
+  res.json({ id: updated.id, discount_cents: updated.discount_cents, total_cents: updated.total_cents });
+});
+
+// Admin: replace the order's items while it is still editable
+// (PENDING_PAYMENT or PAID). Locked once the kitchen accepts the order.
+ordersRouter.patch('/:id/items', requireRole('ADMIN'), (req: AuthRequest, res) => {
+  const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (!['PENDING_PAYMENT', 'PAID'].includes(order.order_status)) {
+    return res.status(409).json({ error: 'Order can no longer be edited — the kitchen is already working on it' });
+  }
+  const items = req.body?.items;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'At least one item is required' });
+  }
+  const clean: { name: string; qty: number; unit: number }[] = [];
+  for (const it of items) {
+    const name = String(it.name || it.item_name || '').trim().slice(0, 120);
+    const qty = Math.floor(Number(it.qty ?? it.quantity));
+    const unit = Math.round(Number(it.unit_price ?? it.unit_price_cents));
+    if (!name || !Number.isFinite(qty) || qty < 1 || qty > 99) {
+      return res.status(400).json({ error: 'Each item needs a name and quantity 1–99' });
+    }
+    if (!Number.isFinite(unit) || unit < 0 || unit > 1000000) {
+      return res.status(400).json({ error: 'Invalid item price' });
+    }
+    clean.push({ name, qty, unit });
+  }
+  const itemsTotal = clean.reduce((s, i) => s + i.qty * i.unit, 0);
+  if (itemsTotal <= 0) return res.status(400).json({ error: 'Order total must be greater than zero' });
+  const discount = Math.min(order.discount_cents || 0, itemsTotal);
+  const ts = now();
+  run('DELETE FROM order_items WHERE order_id = ?', order.id);
+  for (const i of clean) {
+    run(
+      'INSERT INTO order_items (order_id, item_name, quantity, unit_price_cents, total_price_cents) VALUES (?, ?, ?, ?, ?)',
+      order.id, i.name, i.qty, i.unit, i.qty * i.unit
+    );
+  }
+  run('UPDATE orders SET discount_cents = ?, total_cents = ?, updated_at = ? WHERE id = ?',
+    discount, itemsTotal - discount, ts, order.id);
+  run(
+    'INSERT INTO order_status_history (order_id, old_status, new_status, changed_by) VALUES (?, ?, ?, ?)',
+    order.id, order.order_status, order.order_status, req.user!.username + ' (items edited)'
+  );
+  const updated = row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id)!;
+  broadcastOrderUpdate(updated);
+  res.json({ id: updated.id, total_cents: updated.total_cents, discount_cents: updated.discount_cents });
 });
 
 // QR code image — ONLY available once payment is confirmed.

@@ -102,6 +102,24 @@ app.post('/api/menu', requireAuth, requireRole('ADMIN'), (req: AuthRequest, res)
   res.status(201).json({ id: Number(r.lastInsertRowid), name: n, price: p });
 });
 
+app.put('/api/menu/:id', requireAuth, requireRole('ADMIN'), (req: AuthRequest, res) => {
+  const { name, price_cents } = req.body ?? {};
+  const n = String(name || '').trim().slice(0, 120);
+  const pr = Math.round(Number(price_cents));
+  if (!n || !Number.isFinite(pr) || pr < 0) return res.status(400).json({ error: 'Invalid item' });
+  const item = row('SELECT id FROM menu_items WHERE id = ?', req.params.id);
+  if (!item) return res.status(404).json({ error: 'Menu item not found' });
+  run('UPDATE menu_items SET name = ?, price_cents = ? WHERE id = ?', n, pr, req.params.id);
+  res.json({ id: Number(req.params.id), name: n, price: pr });
+});
+
+app.delete('/api/menu/:id', requireAuth, requireRole('ADMIN'), (req: AuthRequest, res) => {
+  const item = row('SELECT id FROM menu_items WHERE id = ?', req.params.id);
+  if (!item) return res.status(404).json({ error: 'Menu item not found' });
+  run('UPDATE menu_items SET active = 0 WHERE id = ?', req.params.id);
+  res.json({ ok: true });
+});
+
 app.get('/api/counters', requireAuth, (_req, res) => {
   res.json(all('SELECT id, name FROM counters ORDER BY id'));
 });

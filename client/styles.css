@@ -271,3 +271,29 @@ table.orders tr:hover td { background: #faf3e8; }
 .role-opt.current { font-weight: 800; color: var(--brand-dark); }
 .role-opt .tick { margin-left: auto; color: var(--brand); font-weight: 800; }
 .user-menu .foot { padding: 10px 12px 12px; border-top: 1px solid var(--line); margin-top: 6px; }
+
+/* ---------- main nav pills ---------- */
+.mainnav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.nav-pill {
+  display: inline-block; padding: 9px 18px; border-radius: 999px;
+  font-weight: 700; font-size: 14px; color: #fff !important; text-decoration: none;
+  box-shadow: 0 1px 3px rgba(0,0,0,.22); white-space: nowrap;
+}
+.nav-pill:active { transform: scale(.96); }
+.nav-orders { background: #2563eb; }
+.nav-new { background: #16a34a; }
+.nav-kitchen { background: #ea580c; }
+.nav-waitlist { background: #9333ea; }
+
+/* ---------- dashboard tabs ---------- */
+.tabs { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+.tab {
+  padding: 10px 22px; border-radius: 999px; border: 2px solid #e5d9c8;
+  background: #fff; font-weight: 700; font-size: 14px; color: #7c5a3a; cursor: pointer;
+}
+.tab.active { background: #c2410c; border-color: #c2410c; color: #fff; }
+.tab .count {
+  display: inline-block; min-width: 22px; text-align: center; margin-left: 6px;
+  background: rgba(0,0,0,.12); border-radius: 999px; font-size: 12px; padding: 1px 6px;
+}
+.tab.active .count { background: rgba(255,255,255,.25); }

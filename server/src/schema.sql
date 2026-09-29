@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS orders (
   customer_phone TEXT,
   special_instructions TEXT,
   total_cents INTEGER NOT NULL,
+  discount_cents INTEGER NOT NULL DEFAULT 0,
   currency TEXT NOT NULL DEFAULT 'usd',
   payment_status TEXT NOT NULL DEFAULT 'PENDING'
     CHECK (payment_status IN ('PENDING','PAID','FAILED','REFUNDED')),
