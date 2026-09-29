@@ -998,6 +998,7 @@ function StaffOrderDetailPage({ id }) {
   let notice = null;
   let lastSig = '';
   let editLines = null; // local editable copy of items (admin, pending orders only)
+  let editNotes = null; // local editable copy of special instructions
   let discBusy = false;
 
   async function load() {
@@ -1009,6 +1010,7 @@ function StaffOrderDetailPage({ id }) {
         lastSig = sig;
         order = data;
         editLines = null; // re-init from fresh order data on render
+        editNotes = null;
         render();
       }
     } catch (e) {
@@ -1063,7 +1065,7 @@ function StaffOrderDetailPage({ id }) {
   }
 
   const isAdmin = () => getViewRole() === 'ADMIN';
-  const editable = () => isAdmin() && order && ['PENDING_PAYMENT', 'PAID'].includes(order.order_status);
+  const editable = () => isAdmin() && order && ['PENDING_PAYMENT', 'PAID', 'RECEIVED'].includes(order.order_status);
 
   function editInit() {
     if (editLines === null && order) {
@@ -1081,8 +1083,8 @@ function StaffOrderDetailPage({ id }) {
 
   function editCardHTML() {
     if (!editable()) {
-      return order && isAdmin() && !['PENDING_PAYMENT', 'PAID', 'CANCELLED'].includes(order.order_status)
-        ? '<div class="card"><div class="info">🔒 This order is with the kitchen — items can no longer be edited.</div></div>'
+      return order && isAdmin() && !['PENDING_PAYMENT', 'PAID', 'RECEIVED', 'CANCELLED'].includes(order.order_status)
+        ? '<div class="card"><div class="info">🔒 The kitchen has started preparing this order — items can no longer be edited.</div></div>'
         : '';
     }
     const lines = editInit();
@@ -1109,6 +1111,9 @@ function StaffOrderDetailPage({ id }) {
           <input id="edit-add-name" placeholder="Item name" style="flex:2;min-width:120px" />
           <input id="edit-add-price" placeholder="$0.00" inputmode="decimal" style="flex:1;min-width:90px" />
           <button class="btn secondary" id="edit-add">Add</button>
+        </div>
+        <div style="margin-top:10px">
+          <label class="field"><span>Special instructions</span><textarea id="edit-notes" rows="2" placeholder="e.g. less spicy, no onions">${esc(editNotes ?? order.special_instructions ?? '')}</textarea></label>
         </div>
         <div class="btn-row" style="margin-top:12px;align-items:center">
           <button class="btn" id="edit-save" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : 'Save changes'}</button>
@@ -1273,6 +1278,8 @@ function StaffOrderDetailPage({ id }) {
         editInit().push({ name, qty: 1, unit_price: price });
         render();
       });
+    const notesEl = document.getElementById('edit-notes');
+    if (notesEl) notesEl.addEventListener('input', () => { editNotes = notesEl.value; });
     const saveBtn = document.getElementById('edit-save');
     if (saveBtn)
       saveBtn.addEventListener('click', async () => {
@@ -1290,6 +1297,11 @@ function StaffOrderDetailPage({ id }) {
             body: JSON.stringify({
               items: lines.map((l) => ({ name: l.name, qty: l.qty, unit_price: l.unit_price })),
             }),
+          });
+          const notesVal = (document.getElementById('edit-notes')?.value ?? '').trim().slice(0, 500);
+          await api(`/api/orders/${order.id}/instructions`, {
+            method: 'PATCH',
+            body: JSON.stringify({ special_instructions: notesVal }),
           });
           busy = false;
           showNotice('Order updated.');

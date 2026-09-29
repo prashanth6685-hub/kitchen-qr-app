@@ -30,10 +30,10 @@ def check(name, cond, detail=""):
         print(f"  FAIL {name} {detail}")
 
 print("== auth ==")
-s, d = req("POST", "/api/auth/login", body={"username": "counter", "password": "wrong"})
+s, d = req("POST", "/api/auth/login", body={"username": "admin", "password": "wrong"})
 check("bad password rejected", s == 401, f"got {s}")
-s, d = req("POST", "/api/auth/login", body={"username": "counter", "password": "counter123"})
-check("counter login", s == 200 and "token" in d, f"got {s}")
+s, d = req("POST", "/api/auth/login", body={"username": "admin", "password": "admin123"})
+check("admin login", s == 200 and "token" in d, f"got {s}")
 counter_tok = d["token"]
 s, d = req("POST", "/api/auth/login", body={"username": "kitchen", "password": "kitchen123"})
 kitchen_tok = d["token"]
@@ -88,7 +88,32 @@ for st in ["RECEIVED", "PREPARING", "READY", "COMPLETED"]:
 s, d = req("PATCH", f"/api/orders/{oid}/status", token=kitchen_tok, body={"status": "CANCELLED"})
 check("kitchen cannot cancel", s == 403, f"got {s}")
 s, d = req("PATCH", f"/api/orders/{oid}/status", token=counter_tok, body={"status": "PREPARING"})
-check("counter cannot do prep statuses", s == 403, f"got {s}")
+check("completed order is terminal", s == 409, f"got {s}")
+
+print("== edit lock ==")
+s, d = req("POST", "/api/orders", token=counter_tok, body={"items": [{"name": "Samosa", "qty": 2, "unit_price": 499}]})
+oid2 = d["id"]
+s, d = req("POST", f"/api/orders/{oid2}/payments/demo", token=counter_tok)
+check("demo payment confirms", s == 200, f"got {s}")
+s, d = req("PATCH", f"/api/orders/{oid2}/instructions", token=counter_tok, body={"special_instructions": "Extra chutney"})
+check("instructions editable while PAID", s == 200, f"got {s}")
+s, d = req("PATCH", f"/api/orders/{oid2}/status", token=kitchen_tok, body={"status": "RECEIVED"})
+s, d = req("PATCH", f"/api/orders/{oid2}/items", token=counter_tok, body={"items": [{"name": "Samosa", "qty": 3, "unit_price": 499}]})
+check("items editable while RECEIVED", s == 200, f"got {s}")
+s, d = req("PATCH", f"/api/orders/{oid2}/discount", token=counter_tok, body={"discount_cents": 100})
+check("discount editable while RECEIVED", s == 200, f"got {s}")
+s, d = req("PATCH", f"/api/orders/{oid2}/status", token=kitchen_tok, body={"status": "PREPARING"})
+for name, path, body in [
+    ("items locked once preparing", f"/api/orders/{oid2}/items", {"items": [{"name": "Samosa", "qty": 1, "unit_price": 499}]}),
+    ("discount locked once preparing", f"/api/orders/{oid2}/discount", {"discount_cents": 50}),
+    ("instructions locked once preparing", f"/api/orders/{oid2}/instructions", {"special_instructions": "x"}),
+]:
+    s, d = req("PATCH", path, token=counter_tok, body=body)
+    check(name, s == 409, f"got {s}")
+s, d = req("GET", f"/api/orders/{oid2}", token=counter_tok)
+check("instructions persisted", d["special_instructions"] == "Extra chutney", f"got {d['special_instructions']!r}")
+s, d = req("PATCH", f"/api/orders/{oid2}/items", token=kitchen_tok, body={"items": [{"name": "Samosa", "qty": 1, "unit_price": 499}]})
+check("kitchen role cannot edit items", s == 403, f"got {s}")
 
 print("== dashboard + history ==")
 s, d = req("GET", "/api/orders?status=COMPLETED", token=counter_tok)

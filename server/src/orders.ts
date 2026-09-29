@@ -36,6 +36,10 @@ const TRANSITIONS: Record<string, string[]> = {
   CANCELLED: [],
 };
 
+// Admin can edit items / instructions / discounts while the order is still
+// "pending" — the order locks the moment the kitchen starts preparing it.
+const EDITABLE_STATUSES = ['PENDING_PAYMENT', 'PAID', 'RECEIVED'];
+
 interface OrderRow {
   id: number;
   public_token: string;
@@ -295,12 +299,12 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
 });
 
 // Admin: apply/change a discount (flat cents) while the order is still editable
-// (PENDING_PAYMENT or PAID). Total is recalculated from items minus discount.
+// (PENDING_PAYMENT, PAID or RECEIVED). Total is recalculated from items minus discount.
 ordersRouter.patch('/:id/discount', requireRole('ADMIN'), (req: AuthRequest, res) => {
   const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
-  if (!['PENDING_PAYMENT', 'PAID'].includes(order.order_status)) {
-    return res.status(409).json({ error: 'Order can no longer be discounted — the kitchen is already working on it' });
+  if (!EDITABLE_STATUSES.includes(order.order_status)) {
+    return res.status(409).json({ error: 'Order can no longer be discounted — the kitchen has started preparing it' });
   }
   const discount = Math.round(Number(req.body?.discount_cents));
   if (!Number.isFinite(discount) || discount < 0) {
@@ -320,12 +324,12 @@ ordersRouter.patch('/:id/discount', requireRole('ADMIN'), (req: AuthRequest, res
 });
 
 // Admin: replace the order's items while it is still editable
-// (PENDING_PAYMENT or PAID). Locked once the kitchen accepts the order.
+// (PENDING_PAYMENT, PAID or RECEIVED). Locked once the kitchen starts preparing.
 ordersRouter.patch('/:id/items', requireRole('ADMIN'), (req: AuthRequest, res) => {
   const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
-  if (!['PENDING_PAYMENT', 'PAID'].includes(order.order_status)) {
-    return res.status(409).json({ error: 'Order can no longer be edited — the kitchen is already working on it' });
+  if (!EDITABLE_STATUSES.includes(order.order_status)) {
+    return res.status(409).json({ error: 'Order can no longer be edited — the kitchen has started preparing it' });
   }
   const items = req.body?.items;
   if (!Array.isArray(items) || items.length === 0) {
@@ -364,6 +368,22 @@ ordersRouter.patch('/:id/items', requireRole('ADMIN'), (req: AuthRequest, res) =
   const updated = row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id)!;
   broadcastOrderUpdate(updated);
   res.json({ id: updated.id, total_cents: updated.total_cents, discount_cents: updated.discount_cents });
+});
+
+// Admin: update the order's special instructions while it is still editable
+// (PENDING_PAYMENT, PAID or RECEIVED). Locked once the kitchen starts preparing.
+ordersRouter.patch('/:id/instructions', requireRole('ADMIN'), (req: AuthRequest, res) => {
+  const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (!EDITABLE_STATUSES.includes(order.order_status)) {
+    return res.status(409).json({ error: 'Instructions can no longer be changed — the kitchen has started preparing it' });
+  }
+  const notes = String(req.body?.special_instructions ?? '').trim().slice(0, 500);
+  const ts = now();
+  run('UPDATE orders SET special_instructions = ?, updated_at = ? WHERE id = ?', notes || null, ts, order.id);
+  const updated = row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id)!;
+  broadcastOrderUpdate(updated);
+  res.json({ id: updated.id, special_instructions: updated.special_instructions });
 });
 
 // QR code image — ONLY available once payment is confirmed.
