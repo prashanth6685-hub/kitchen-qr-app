@@ -10,6 +10,10 @@ CREATE TABLE IF NOT EXISTS locations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   org_id INTEGER NOT NULL REFERENCES organizations(id),
   name TEXT NOT NULL,
+  slug TEXT,
+  waitlist_prefix TEXT NOT NULL DEFAULT 'A',
+  avg_party_minutes INTEGER NOT NULL DEFAULT 5,
+  waitlist_enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -103,3 +107,62 @@ CREATE TABLE IF NOT EXISTS order_status_history (
   changed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_status_history_order ON order_status_history(order_id);
+
+-- ================= Module 2: restaurant check-in & digital waiting list =================
+
+CREATE TABLE IF NOT EXISTS waitlist_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  public_token TEXT NOT NULL UNIQUE,
+  location_id INTEGER NOT NULL REFERENCES locations(id),
+  queue_seq INTEGER NOT NULL,
+  queue_number TEXT NOT NULL,
+  customer_name TEXT NOT NULL,
+  customer_phone TEXT,
+  party_size INTEGER NOT NULL DEFAULT 1,
+  special_requirements TEXT,
+  status TEXT NOT NULL DEFAULT 'WAITING'
+    CHECK (status IN ('WAITING','ALMOST_READY','CALLED','SEATED','SKIPPED','NO_SHOW','CANCELLED','EXPIRED')),
+  recall_count INTEGER NOT NULL DEFAULT 0,
+  notified_almost_ready INTEGER NOT NULL DEFAULT 0,
+  notified_called INTEGER NOT NULL DEFAULT 0,
+  check_in_time TEXT NOT NULL DEFAULT (datetime('now')),
+  called_time TEXT,
+  seated_time TEXT,
+  cancelled_time TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_waitlist_token ON waitlist_entries(public_token);
+CREATE INDEX IF NOT EXISTS idx_waitlist_location_status ON waitlist_entries(location_id, status);
+CREATE INDEX IF NOT EXISTS idx_waitlist_location_seq ON waitlist_entries(location_id, queue_seq);
+
+-- Atomic per-location, per-day queue numbering.
+CREATE TABLE IF NOT EXISTS waitlist_sequences (
+  location_id INTEGER NOT NULL,
+  day TEXT NOT NULL,
+  last_number INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (location_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS queue_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  waitlist_entry_id INTEGER NOT NULL REFERENCES waitlist_entries(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  old_status TEXT,
+  new_status TEXT,
+  performed_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_queue_events_entry ON queue_events(waitlist_entry_id);
+
+-- Web-push subscriptions for waitlist entries (mirrors push_subscriptions for orders).
+CREATE TABLE IF NOT EXISTS waitlist_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  waitlist_entry_id INTEGER NOT NULL REFERENCES waitlist_entries(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  device_type TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_waitlist_subs_entry ON waitlist_subscriptions(waitlist_entry_id);

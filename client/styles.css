@@ -151,3 +151,32 @@ table.orders tr:hover td { background: #f8fafc; }
   .topbar, .btn-row, .no-print { display: none !important; }
   .page { max-width: none; }
 }
+
+/* ---- waitlist (module 2) ---- */
+.queue-big { font-size: 64px; font-weight: 800; letter-spacing: .02em; line-height: 1.1; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin: 14px 0 4px; }
+.stat { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 8px; text-align: center; }
+.stat .v { font-size: 20px; font-weight: 800; }
+.stat .l { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.now-serving { text-align: center; padding: 8px 0 4px; }
+.now-serving .num { font-size: 56px; font-weight: 800; line-height: 1.1; }
+.wl-row { display: flex; align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.wl-row:last-child { border-bottom: none; }
+.wl-num { font-size: 22px; font-weight: 800; min-width: 60px; }
+.wl-info { flex: 1; min-width: 160px; }
+.wl-info .name { font-weight: 700; }
+.wl-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn.sm { min-height: 36px; padding: 7px 12px; font-size: 13px; }
+.picker-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.picker-item { display: flex; align-items: center; gap: 10px; border: 1.5px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; font-size: 15px; }
+.picker-item.sel { border-color: var(--green); background: #f0fdf4; }
+.picker-item input { width: auto; margin: 0; }
+.chip.static { cursor: default; }
+.badge.WAITING { background: #e0e7ff; color: #3730a3; }
+.badge.ALMOST_READY { background: #fef3c7; color: #92400e; }
+.badge.CALLED { background: #dcfce7; color: #166534; }
+.badge.SEATED { background: #f3f4f6; color: #4b5563; }
+.badge.SKIPPED { background: #ffedd5; color: #9a3412; }
+.badge.NO_SHOW { background: #fee2e2; color: #991b1b; }
+.badge.EXPIRED { background: #fee2e2; color: #991b1b; }
+.status-hero.CALLED { background: linear-gradient(180deg, #dcfce7, #ffffff); border-color: #86efac; }

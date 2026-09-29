@@ -113,7 +113,11 @@ function isStandalone() {
   );
 }
 
-async function enablePush(orderToken) {
+async function enablePush(token, opts = {}) {
+  const {
+    subscribePath = '/api/notifications/subscribe',
+    doneMessage = "You're all set — we'll notify you when your order is ready.",
+  } = opts;
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     return { ok: false, message: 'Push notifications are not supported in this browser.' };
   }
@@ -135,17 +139,17 @@ async function enablePush(orderToken) {
         applicationServerKey: urlBase64ToUint8Array(publicKey),
       });
     }
-    const res = await fetch('/api/notifications/subscribe', {
+    const res = await fetch(subscribePath, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        token: orderToken,
+        token,
         subscription: sub.toJSON(),
         device_type: isIOS() ? 'ios' : 'android/other',
       }),
     });
     if (!res.ok) throw new Error('subscribe failed');
-    return { ok: true, message: "You're all set — we'll notify you when your order is ready." };
+    return { ok: true, message: doneMessage };
   } catch (e) {
     console.error('[push]', e);
     return { ok: false, message: 'Could not enable notifications, but this page still updates live.' };
@@ -172,7 +176,10 @@ const routes = [
   { re: /^\/$/, page: HomePage },
   { re: /^\/login$/, page: LoginPage },
   { re: /^\/order\/([^/]+)$/, page: CustomerOrderPage, params: ['token'] },
+  { re: /^\/checkin\/([^/]+)$/, page: CheckinPage, params: ['slug'] },
+  { re: /^\/wait\/([^/]+)$/, page: WaitlistTrackingPage, params: ['token'] },
   { re: /^\/staff$/, page: StaffDashboardPage, staff: true },
+  { re: /^\/staff\/waitlist$/, page: StaffWaitlistPage, staff: true },
   { re: /^\/staff\/new$/, page: NewOrderPage, staff: true },
   { re: /^\/staff\/orders\/(\d+)$/, page: StaffOrderDetailPage, staff: true, params: ['id'] },
   { re: /^\/kitchen$/, page: KitchenDisplayPage, staff: true },
@@ -239,6 +246,7 @@ function topBar() {
       <a class="link" href="/staff">Orders</a>
       ${canOrder ? '<a class="link" href="/staff/new">+ New</a>' : ''}
       <a class="link" href="/kitchen">Kitchen</a>
+      <a class="link" href="/staff/waitlist">Waitlist</a>
       <button class="btn secondary" id="logout-btn" style="min-height:36px;padding:6px 12px;font-size:13px">Log out</button>
     </nav>
   </div>`;
@@ -267,7 +275,7 @@ function HomePage() {
       <div class="btn-row" style="justify-content:center">
         ${
           user
-            ? '<a class="btn" href="/staff">Staff dashboard</a><a class="btn secondary" href="/kitchen">Kitchen display</a>'
+            ? '<a class="btn" href="/staff">Staff dashboard</a><a class="btn secondary" href="/kitchen">Kitchen display</a><a class="btn secondary" href="/staff/waitlist">Waitlist</a>'
             : '<a class="btn" href="/login">Staff log in</a>'
         }
       </div>
@@ -1229,6 +1237,901 @@ function CustomerOrderPage({ token }) {
   } catch {
     pollTimer = window.setInterval(refresh, 5000);
   }
+
+  return () => {
+    if (es) es.close();
+    if (pollTimer) window.clearInterval(pollTimer);
+  };
+}
+
+/* ============================== waitlist (module 2) ============================== */
+
+const WL_STATUS_LABELS = {
+  WAITING: 'Waiting',
+  ALMOST_READY: 'Almost your turn',
+  CALLED: 'Your table is ready',
+  SEATED: 'Seated',
+  SKIPPED: 'Skipped',
+  NO_SHOW: 'No-show',
+  CANCELLED: 'Cancelled',
+  EXPIRED: 'Expired',
+};
+
+// Buttons shown per entry status on the staff dashboard. Only sensible
+// transitions are offered (the backend also enforces them with 409s).
+const WL_ACTIONS = {
+  WAITING: [
+    ['almost-ready', 'ALMOST READY', 'secondary'],
+    ['call', 'CALL', ''],
+    ['no-show', 'NO SHOW', 'warn'],
+    ['cancel', 'CANCEL', 'danger'],
+  ],
+  ALMOST_READY: [
+    ['call', 'CALL', ''],
+    ['skip', 'SKIP', 'warn'],
+    ['no-show', 'NO SHOW', 'warn'],
+    ['cancel', 'CANCEL', 'danger'],
+  ],
+  CALLED: [
+    ['seated', 'SEATED', ''],
+    ['recall', 'RECALL', 'secondary'],
+    ['skip', 'SKIP', 'warn'],
+    ['no-show', 'NO SHOW', 'warn'],
+    ['restore', 'MOVE BACK TO WAITING', 'secondary'],
+    ['cancel', 'CANCEL', 'danger'],
+  ],
+  SKIPPED: [
+    ['restore', 'MOVE BACK TO WAITING', 'secondary'],
+    ['call', 'CALL', ''],
+    ['no-show', 'NO SHOW', 'warn'],
+    ['cancel', 'CANCEL', 'danger'],
+  ],
+};
+
+// Shared "enable push notifications" card for the customer waitlist pages.
+function makePushController(onChange, opts) {
+  const { token, subscribePath, doneMessage, heading, blurb } = opts;
+  const c = {
+    state: 'available',
+    msg: null,
+    busy: false,
+    showIOSHint: isIOS() && !isStandalone(),
+    async init() {
+      const s = await getPushState();
+      if (s !== this.state) {
+        this.state = s;
+        onChange();
+      }
+    },
+    html() {
+      if (this.state === 'subscribed') {
+        return `<div class="ok">Notifications on — ${esc(doneMessage)}</div>`;
+      }
+      let body = '';
+      if (this.state === 'denied') {
+        body = `<div class="info">Notifications are blocked for this site. You can still watch this page — it updates live automatically.</div>`;
+      } else if (this.state === 'unsupported') {
+        body = `<div class="info">This browser doesn't support push notifications — this page still updates live automatically.</div>`;
+      } else {
+        body = `
+        ${
+          this.showIOSHint
+            ? `<div class="info">On iPhone, push notifications work best if you add this page to your Home Screen first (Share → Add to Home Screen), then tap the button below.</div>`
+            : ''
+        }
+        <button class="btn block" id="wl-push-btn" ${this.busy ? 'disabled' : ''}>${
+          this.busy ? 'Enabling…' : 'Enable notifications'
+        }</button>`;
+      }
+      return `
+      <div class="card">
+        <h2>${esc(heading || 'Get notified')}</h2>
+        <p class="sub">${esc(blurb || "We'll notify you when your table is almost ready and when it's your turn.")}</p>
+        ${body}
+        ${this.msg ? `<div class="info">${esc(this.msg)}</div>` : ''}
+      </div>`;
+    },
+    bind() {
+      const b = document.getElementById('wl-push-btn');
+      if (b) b.addEventListener('click', () => this.enable());
+    },
+    async enable() {
+      this.busy = true;
+      this.msg = null;
+      onChange();
+      const r = await enablePush(token, { subscribePath, doneMessage });
+      this.busy = false;
+      if (r.ok) {
+        this.state = 'subscribed';
+      } else {
+        this.msg = r.message;
+        this.state = await getPushState();
+      }
+      onChange();
+    },
+  };
+  return c;
+}
+
+/* ------------------------- customer check-in ------------------------- */
+
+function CheckinPage({ slug }) {
+  let loc = null;
+  let loadError = null; // 'invalid' | 'disabled' | <message>
+  let busy = false;
+  let formError = null;
+  let confirmed = null; // check-in response entry json
+  let isDuplicate = false;
+  let push = null;
+
+  async function init() {
+    try {
+      const res = await fetch(`/api/waitlist/location/${encodeURIComponent(slug)}`);
+      if (res.status === 404) {
+        loadError = 'invalid';
+      } else if (!res.ok) {
+        loadError = 'Could not load this check-in page. Please try again.';
+      } else {
+        loc = await res.json();
+        if (!loc.waitlist_enabled) loadError = 'disabled';
+      }
+    } catch {
+      loadError = 'Could not load this check-in page. Please try again.';
+    }
+    render();
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    const name = document.getElementById('wl-name').value.trim();
+    const size = Number(document.getElementById('wl-size').value);
+    const phone = document.getElementById('wl-phone').value.trim();
+    const notes = document.getElementById('wl-notes').value.trim();
+    if (!name) {
+      formError = 'Please enter your name.';
+      render();
+      return;
+    }
+    if (!Number.isFinite(size) || size < 1 || size > 30) {
+      formError = 'Party size must be between 1 and 30.';
+      render();
+      return;
+    }
+    busy = true;
+    formError = null;
+    render();
+    try {
+      const data = await api('/api/waitlist/check-in', {
+        method: 'POST',
+        body: JSON.stringify({
+          slug,
+          customer_name: name,
+          party_size: size,
+          ...(phone ? { customer_phone: phone } : {}),
+          ...(notes ? { special_requirements: notes } : {}),
+        }),
+      });
+      isDuplicate = !!data.duplicate;
+      confirmed = data;
+      push = makePushController(render, {
+        token: data.public_token,
+        subscribePath: '/api/waitlist/notifications/subscribe',
+        doneMessage: "We'll notify you when your table is almost ready.",
+        blurb: "We'll notify you when your table is almost ready and when it's your turn.",
+      });
+      push.init();
+      busy = false;
+      render();
+      window.scrollTo(0, 0);
+    } catch (err) {
+      busy = false;
+      formError = err.message;
+      render();
+    }
+  }
+
+  function render() {
+    if (loadError === 'invalid') {
+      root.innerHTML = `
+      <div class="page">
+        <div class="card" style="text-align:center;margin-top:40px">
+          <h2>Invalid check-in link</h2>
+          <p class="sub">This check-in link isn't valid. Please scan the restaurant's QR code again or ask the host stand for help.</p>
+        </div>
+      </div>`;
+      return;
+    }
+    if (loadError === 'disabled') {
+      root.innerHTML = `
+      <div class="page">
+        <div class="card" style="text-align:center;margin-top:40px">
+          <h2>${esc((loc && loc.restaurant_name) || 'Restaurant')}</h2>
+          <p class="sub">The waiting list is currently closed for this location. Please check with the host stand.</p>
+        </div>
+      </div>`;
+      return;
+    }
+    if (loadError) {
+      root.innerHTML = `
+      <div class="page">
+        <div class="card" style="text-align:center;margin-top:40px">
+          <h2>Check-in</h2>
+          <div class="error">${esc(loadError)}</div>
+        </div>
+      </div>`;
+      return;
+    }
+    if (!loc) {
+      root.innerHTML = '<div class="page"><div class="card empty">Loading…</div></div>';
+      return;
+    }
+    if (confirmed) {
+      renderConfirmed();
+      return;
+    }
+
+    const waitLine =
+      loc.queue_length > 0
+        ? `${loc.queue_length} ${loc.queue_length === 1 ? 'party' : 'parties'} waiting${
+            loc.estimated_wait_label ? ` · about ${esc(loc.estimated_wait_label)}` : ''
+          }`
+        : 'No wait right now — check in and we’ll seat you soon.';
+
+    root.innerHTML = `
+    <div class="page">
+      <div class="topbar" style="position:static;border-radius:14px;margin-bottom:4px">
+        <div class="brand"><span>●</span> ${esc(loc.restaurant_name || 'Restaurant')}</div>
+      </div>
+      <div class="card">
+        <h1>Join the waiting list</h1>
+        <p class="sub">${waitLine}</p>
+        ${formError ? `<div class="error">${esc(formError)}</div>` : ''}
+        <form id="wl-checkin-form">
+          <label class="field"><span>Name</span><input id="wl-name" autocomplete="name" maxlength="120" /></label>
+          <label class="field"><span>Number of guests</span><input id="wl-size" type="number" min="1" max="30" inputmode="numeric" value="2" /></label>
+          <label class="field"><span>Phone number (optional)</span><input id="wl-phone" inputmode="tel" placeholder="So we can find your entry if needed" /></label>
+          <label class="field"><span>Special requirements (optional)</span><textarea id="wl-notes" rows="2" placeholder="High chair, wheelchair access, indoor/outdoor…"></textarea></label>
+          <button class="btn block" type="submit" ${busy ? 'disabled' : ''}>${
+      busy ? 'Checking in…' : 'CHECK IN'
+    }</button>
+        </form>
+      </div>
+    </div>`;
+    document.getElementById('wl-checkin-form').addEventListener('submit', submit);
+  }
+
+  function renderConfirmed() {
+    const e = confirmed;
+    // qr_url is only contract-guaranteed on the token endpoint, so build it
+    // from the public token here (same shape the backend uses).
+    const qrSrc = `/api/waitlist/token/${encodeURIComponent(e.public_token)}/qr.png`;
+    root.innerHTML = `
+    <div class="page">
+      <div class="topbar" style="position:static;border-radius:14px;margin-bottom:4px">
+        <div class="brand"><span>●</span> ${esc(e.restaurant_name || '')}</div>
+      </div>
+      <div class="card" style="text-align:center">
+        ${
+          isDuplicate
+            ? `<div class="info">You already have an active entry — we didn't create a second one.</div>`
+            : `<h2 style="margin-top:0">You're checked in!</h2>`
+        }
+        <div class="sub" style="margin-bottom:0">Your number</div>
+        <div class="queue-big">${esc(e.queue_number)}</div>
+        <div class="stat-grid" style="margin-top:16px">
+          <div class="stat"><div class="v">${e.party_size}</div><div class="l">Guests</div></div>
+          <div class="stat"><div class="v">${e.parties_ahead}</div><div class="l">Ahead of you</div></div>
+          <div class="stat"><div class="v" style="font-size:16px">${esc(e.estimated_wait_label)}</div><div class="l">Est. wait</div></div>
+        </div>
+      </div>
+      <div class="card qr-box">
+        <h2>Your QR code</h2>
+        <p class="sub">Scan this to return to your waitlist page.</p>
+        <img src="${esc(qrSrc)}" alt="Waitlist QR code ${esc(e.queue_number)}" />
+      </div>
+      <div id="wl-push"></div>
+      <div class="card" style="text-align:center">
+        <a class="btn block" href="/wait/${encodeURIComponent(e.public_token)}">Track my place in line →</a>
+      </div>
+    </div>`;
+    const box = document.getElementById('wl-push');
+    box.innerHTML = push.html();
+    push.bind();
+  }
+
+  init();
+}
+
+/* ------------------------- customer tracking ------------------------- */
+
+const WL_TERMINAL = ['CANCELLED', 'NO_SHOW', 'EXPIRED'];
+
+function WaitlistTrackingPage({ token }) {
+  let entry = null;
+  let error = null;
+  let live = false;
+  let confirmCancel = false;
+  let cancelBusy = false;
+  let cancelError = null;
+  let lastSig = '';
+  const push = makePushController(render, {
+    token,
+    subscribePath: '/api/waitlist/notifications/subscribe',
+    doneMessage: "We'll notify you when your table is almost ready.",
+    blurb: "We'll notify you when your table is almost ready and when it's your turn.",
+  });
+
+  async function refresh() {
+    try {
+      const res = await fetch(`/api/waitlist/token/${encodeURIComponent(token)}`);
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((data && data.error) || 'Could not load this waitlist entry.');
+      error = null;
+      const sig = JSON.stringify(data);
+      if (sig !== lastSig) {
+        lastSig = sig;
+        entry = data;
+        render();
+      }
+    } catch (e) {
+      if (!entry) {
+        error = e.message;
+        render();
+      }
+    }
+  }
+
+  function stepsHTML(status) {
+    const labels = ['Checked in', 'Waiting', 'Almost your turn', 'Called', 'Seated'];
+    const idx = { WAITING: 1, ALMOST_READY: 2, CALLED: 3, SEATED: 4, SKIPPED: 3 }[status] ?? 1;
+    return `<ul class="steps">${labels
+      .map((label, i) => {
+        const cls = i < idx ? 'done' : i === idx ? 'current' : '';
+        return `<li class="${cls}"><span class="dot">${i < idx ? '✓' : i + 1}</span><span>${label}</span></li>`;
+      })
+      .join('')}</ul>`;
+  }
+
+  async function doCancel() {
+    cancelBusy = true;
+    cancelError = null;
+    render();
+    try {
+      await api(`/api/waitlist/token/${encodeURIComponent(token)}/cancel`, { method: 'POST' });
+      confirmCancel = false;
+      cancelBusy = false;
+      lastSig = '';
+      await refresh();
+    } catch (e) {
+      cancelBusy = false;
+      cancelError = e.message;
+      render();
+    }
+  }
+
+  function render() {
+    if (error) {
+      root.innerHTML = `
+      <div class="page">
+        <div class="card" style="text-align:center;margin-top:40px">
+          <h2>Waitlist link not found</h2>
+          <p class="sub">${esc(error)} Please scan your QR code again or check with the host stand.</p>
+        </div>
+      </div>`;
+      return;
+    }
+    if (!entry) {
+      root.innerHTML = '<div class="page"><div class="card empty">Loading your waitlist entry…</div></div>';
+      return;
+    }
+    const e = entry;
+    const terminal = WL_TERMINAL.includes(e.status);
+    const statusLabel = WL_STATUS_LABELS[e.status] || e.status;
+
+    let statusCard = '';
+    if (terminal) {
+      const note =
+        e.status === 'CANCELLED'
+          ? 'Your waitlist entry was cancelled.'
+          : e.status === 'NO_SHOW'
+          ? 'You were marked as a no-show. Please check with the host stand if you still need a table.'
+          : 'This waitlist entry has expired.';
+      statusCard = `<div class="card"><div class="info">${esc(note)}</div></div>`;
+    } else if (e.status === 'SEATED') {
+      statusCard = `<div class="card"><div class="ok">You're seated — enjoy your meal!</div>${stepsHTML(e.status)}</div>`;
+    } else {
+      statusCard = `
+      <div class="card">
+        <h2>Queue status</h2>
+        ${stepsHTML(e.status)}
+        ${
+          e.status === 'SKIPPED'
+            ? `<div class="info">You've been skipped for now — please check with the host stand. You may be called again.</div>`
+            : ''
+        }
+      </div>`;
+    }
+
+    let cancelCard = '';
+    if (e.status === 'WAITING' || e.status === 'ALMOST_READY') {
+      if (confirmCancel) {
+        cancelCard = `
+        <div class="card" style="text-align:center">
+          <h2>Cancel your wait?</h2>
+          <p class="sub">Your place in line (${esc(e.queue_number)}) will be released.</p>
+          ${cancelError ? `<div class="error">${esc(cancelError)}</div>` : ''}
+          <div class="btn-row">
+            <button class="btn danger" id="wl-cancel-yes" ${
+              cancelBusy ? 'disabled' : ''
+            }>${cancelBusy ? 'Cancelling…' : 'YES, CANCEL'}</button>
+            <button class="btn secondary" id="wl-cancel-no">KEEP WAITING</button>
+          </div>
+        </div>`;
+      } else {
+        cancelCard = `
+        <div class="card">
+          <button class="btn secondary block" id="wl-cancel">Cancel my wait</button>
+        </div>`;
+      }
+    }
+
+    root.innerHTML = `
+    <div class="page">
+      <div class="topbar" style="position:static;border-radius:14px;margin-bottom:4px">
+        <div class="brand"><span>●</span> ${esc(e.restaurant_name || 'YOUR RESTAURANT')}</div>
+        <span class="who">${live ? '● live' : '○ connecting…'}</span>
+      </div>
+
+      <div class="card status-hero ${e.status === 'CALLED' || e.status === 'SEATED' ? 'CALLED' : ''}" style="text-align:center">
+        <div class="sub" style="margin:0">${esc(e.restaurant_name || '')}${
+      e.customer_name ? ` · ${esc(e.customer_name)}` : ''
+    }</div>
+        <div class="queue-big">${esc(e.queue_number)}</div>
+        <div class="big" style="font-size:22px;margin-top:6px">${esc(statusLabel)}</div>
+        <div class="stat-grid" style="margin-top:16px">
+          <div class="stat"><div class="v">${e.party_size}</div><div class="l">Guests</div></div>
+          <div class="stat"><div class="v">${esc(e.currently_serving || '—')}</div><div class="l">Now serving</div></div>
+          <div class="stat"><div class="v">${e.parties_ahead}</div><div class="l">Ahead of you</div></div>
+          <div class="stat"><div class="v" style="font-size:16px">${esc(e.estimated_wait_label)}</div><div class="l">Est. wait</div></div>
+        </div>
+      </div>
+
+      ${statusCard}
+
+      ${terminal ? '' : '<div id="wl-push"></div>'}
+
+      <div class="card qr-box">
+        <h2>Your QR code</h2>
+        <p class="sub">Keep this page open — it updates automatically. Scan the QR code to return here.</p>
+        <img src="${esc(e.qr_url)}" alt="Waitlist QR code ${esc(e.queue_number)}" />
+      </div>
+
+      ${cancelCard}
+    </div>`;
+
+    const box = document.getElementById('wl-push');
+    if (box) {
+      box.innerHTML = push.html();
+      push.bind();
+    }
+    const c1 = document.getElementById('wl-cancel');
+    if (c1)
+      c1.addEventListener('click', () => {
+        confirmCancel = true;
+        render();
+      });
+    const c2 = document.getElementById('wl-cancel-no');
+    if (c2)
+      c2.addEventListener('click', () => {
+        confirmCancel = false;
+        cancelError = null;
+        render();
+      });
+    const c3 = document.getElementById('wl-cancel-yes');
+    if (c3) c3.addEventListener('click', doCancel);
+  }
+
+  refresh();
+  push.init();
+
+  // Real-time updates: SSE first, polling fallback.
+  let es = null;
+  let pollTimer = null;
+  let pollFallback = false;
+  try {
+    es = new EventSource(`/api/waitlist/token/${encodeURIComponent(token)}/events`);
+    es.addEventListener('waitlist', (ev) => {
+      try {
+        const u = JSON.parse(ev.data);
+        if (u && u.queue_number) {
+          live = true;
+          const sig = JSON.stringify(u);
+          if (sig !== lastSig) {
+            lastSig = sig;
+            entry = u;
+            render();
+          }
+        }
+      } catch {}
+    });
+    es.onerror = () => {
+      if (es) es.close();
+      es = null;
+      if (!pollFallback) {
+        pollFallback = true;
+        pollTimer = window.setInterval(() => {
+          live = true;
+          refresh();
+        }, 5000);
+      }
+    };
+  } catch {
+    pollTimer = window.setInterval(refresh, 5000);
+  }
+
+  return () => {
+    if (es) es.close();
+    if (pollTimer) window.clearInterval(pollTimer);
+  };
+}
+
+/* ------------------------- staff waitlist dashboard ------------------------- */
+
+function StaffWaitlistPage() {
+  const user = getUser();
+  const canWrite = user.role === 'ADMIN' || user.role === 'COUNTER_STAFF';
+  let locations = [];
+  let locationId = null;
+  let summary = null;
+  let locInfo = null; // public location info (check-in URL) for the printable QR
+  let locInfoFor = null;
+  let error = null;
+  let selectMode = false;
+  let selectedId = null;
+  let busy = null; // 'call-next' or `<action>:<id>`
+  let notice = null;
+  let noticeKind = 'ok';
+  let lastSig = '';
+  let es = null;
+  let pollTimer = null;
+
+  async function init() {
+    try {
+      locations = await api('/api/waitlist/admin/locations');
+    } catch (e) {
+      error = e.message;
+      render();
+      return;
+    }
+    if (locations.length === 0) {
+      error = 'No restaurant locations found for your account.';
+      render();
+      return;
+    }
+    const q = Number(new URLSearchParams(location.search).get('location_id'));
+    locationId = locations.some((l) => l.id === q) ? q : locations[0].id;
+    render();
+    await load();
+    loadLocInfo();
+    startLive();
+  }
+
+  async function load() {
+    try {
+      const data = await api(`/api/waitlist/admin/summary?location_id=${locationId}`);
+      error = null;
+      const sig = JSON.stringify(data);
+      if (sig !== lastSig) {
+        lastSig = sig;
+        summary = data;
+        render();
+      }
+    } catch (e) {
+      error = e.message;
+      render();
+    }
+  }
+
+  // Public info for the permanent restaurant check-in QR (no auth needed).
+  async function loadLocInfo() {
+    const loc = locations.find((l) => l.id === locationId);
+    if (!loc || !loc.slug || locInfoFor === loc.slug) return;
+    locInfoFor = loc.slug;
+    try {
+      const res = await fetch(`/api/waitlist/location/${encodeURIComponent(loc.slug)}`);
+      if (res.ok) {
+        locInfo = await res.json();
+        render();
+      }
+    } catch {}
+  }
+
+  async function act(id, action) {
+    busy = `${action}:${id}`;
+    notice = null;
+    render();
+    try {
+      await api(`/api/waitlist/${id}/${action}`, { method: 'POST' });
+      busy = null;
+      selectMode = false;
+      selectedId = null;
+      lastSig = '';
+      await load();
+    } catch (e) {
+      busy = null;
+      notice = e.message;
+      noticeKind = 'error';
+      render();
+    }
+  }
+
+  async function callNext() {
+    busy = 'call-next';
+    notice = null;
+    render();
+    try {
+      const r = await api('/api/waitlist/admin/call-next', {
+        method: 'POST',
+        body: JSON.stringify({ location_id: locationId }),
+      });
+      busy = null;
+      lastSig = '';
+      notice = `Called ${r.queue_number}.`;
+      noticeKind = 'ok';
+      await load();
+    } catch (e) {
+      busy = null;
+      notice = e.message;
+      noticeKind = 'error';
+      render();
+    }
+  }
+
+  function entryRow(e) {
+    const actions = WL_ACTIONS[e.status] || [];
+    return `
+    <div class="wl-row">
+      <div class="wl-num">${esc(e.queue_number)}</div>
+      <div class="wl-info">
+        <div class="name">${esc(e.customer_name)} <span class="sub">· ${e.party_size} guest${
+      e.party_size === 1 ? '' : 's'
+    }</span></div>
+        <div class="sub" style="margin:2px 0 0">
+          <span class="badge ${esc(e.status)}">${esc(e.status.replace(/_/g, ' '))}</span>
+          <span>checked in ${e.waited_min} min ago</span>
+          ${e.customer_phone ? `<span> · ${esc(e.customer_phone)}</span>` : ''}
+          ${e.special_requirements ? `<span> · ${esc(e.special_requirements)}</span>` : ''}
+          ${e.recall_count ? `<span> · recalled ${e.recall_count}×</span>` : ''}
+        </div>
+      </div>
+      ${
+        canWrite && actions.length
+          ? `<div class="wl-actions">${actions
+              .map(
+                ([a, label, kind]) =>
+                  `<button class="btn sm ${kind}" data-act="${a}" data-id="${e.id}" ${
+                    busy === `${a}:${e.id}` ? 'disabled' : ''
+                  }>${busy === `${a}:${e.id}` ? '…' : label}</button>`
+              )
+              .join('')}</div>`
+          : ''
+      }
+    </div>`;
+  }
+
+  function render() {
+    if (error && locations.length === 0) {
+      root.innerHTML = `${topBar()}<div class="page"><div class="error">${esc(error)}</div></div>`;
+      wireTopBar();
+      return;
+    }
+    if (!summary) {
+      root.innerHTML = `${topBar()}<div class="page">${
+        error ? `<div class="error">${esc(error)}</div>` : ''
+      }<div class="card empty">Loading the waiting list…</div></div>`;
+      wireTopBar();
+      return;
+    }
+
+    const loc = locations.find((l) => l.id === locationId) || {};
+    const counts = summary.counts || {};
+    const entries = summary.entries || [];
+    const waiting = entries.filter((e) => e.status === 'WAITING');
+
+    let picker = '';
+    if (selectMode && canWrite) {
+      picker = `
+      <div class="card" id="select-guest-card">
+        <h2>Select guest</h2>
+        <p class="sub">Choose which waiting customer to call — useful when a table fits a specific party size.</p>
+        ${
+          waiting.length === 0
+            ? '<div class="empty">No one is waiting.</div>'
+            : `
+        <div class="picker-list">
+          ${waiting
+            .map(
+              (e) => `
+          <label class="picker-item ${selectedId === e.id ? 'sel' : ''}">
+            <input type="radio" name="wl-select" value="${e.id}" ${selectedId === e.id ? 'checked' : ''} />
+            <span><b>${esc(e.queue_number)}</b> — ${esc(e.customer_name)} — ${e.party_size} guest${
+                e.party_size === 1 ? '' : 's'
+              }</span>
+          </label>`
+            )
+            .join('')}
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="wl-call-selected" ${
+            selectedId == null || busy ? 'disabled' : ''
+          }>${busy ? 'Calling…' : 'CALL SELECTED'}</button>
+          <button class="btn secondary" id="wl-select-cancel">Back</button>
+        </div>`
+        }
+      </div>`;
+    }
+
+    const qrSrc = loc.slug ? `/api/waitlist/location/${encodeURIComponent(loc.slug)}/qr.png` : null;
+    const checkinUrl = locInfo && locInfo.checkin_url ? locInfo.checkin_url : '';
+
+    root.innerHTML = `
+    ${topBar()}
+    <div class="page wide">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <h1>Waiting list</h1>
+        <label class="field" style="margin:0;min-width:240px">
+          <span>Location</span>
+          <select id="wl-loc">
+            ${locations
+              .map(
+                (l) =>
+                  `<option value="${l.id}" ${l.id === locationId ? 'selected' : ''}>${esc(
+                    l.restaurant_name
+                  )} — ${esc(l.name)}</option>`
+              )
+              .join('')}
+          </select>
+        </label>
+      </div>
+
+      ${error ? `<div class="error">${esc(error)}</div>` : ''}
+      ${notice ? `<div class="${noticeKind === 'ok' ? 'ok' : 'error'}">${esc(notice)}</div>` : ''}
+
+      <div class="card">
+        <div class="now-serving">
+          <div class="sub" style="margin:0">NOW SERVING</div>
+          <div class="num">${esc(summary.now_serving || '—')}</div>
+        </div>
+        <div style="text-align:center;margin-top:8px">
+          <div class="sub" style="margin:0 0 6px">NEXT UP</div>
+          ${
+            summary.next_up && summary.next_up.length
+              ? summary.next_up.map((n) => `<span class="chip static">${esc(n)}</span>`).join(' ')
+              : '<span class="sub">—</span>'
+          }
+        </div>
+        <div class="filterbar" style="justify-content:center;margin-bottom:0">
+          ${Object.entries(counts)
+            .map(([s, n]) => `<span class="chip static">${esc(s.replace(/_/g, ' '))}: ${n}</span>`)
+            .join('')}
+        </div>
+      </div>
+
+      ${
+        canWrite
+          ? `
+      <div class="card">
+        <div class="btn-row" style="margin-top:0">
+          <button class="btn block" id="wl-call-next" ${busy === 'call-next' ? 'disabled' : ''}>${
+              busy === 'call-next' ? 'Calling…' : 'CALL NEXT'
+            }</button>
+          <button class="btn secondary block" id="wl-select-guest">SELECT GUEST</button>
+        </div>
+      </div>
+      ${picker}`
+          : `<div class="info">Your staff role is read-only — ask an admin or counter staff member to manage the queue.</div>`
+      }
+
+      <div class="card">
+        <h2>Queue</h2>
+        ${
+          entries.length === 0
+            ? '<div class="empty">No one is waiting right now.</div>'
+            : entries.map(entryRow).join('')
+        }
+      </div>
+
+      ${
+        qrSrc
+          ? `
+      <div class="card qr-box no-print">
+        <h2>Check-in QR</h2>
+        <p class="sub">Display at the entrance or host stand — customers scan it to join this location's waiting list.</p>
+        <img src="${qrSrc}" alt="Restaurant check-in QR code" />
+        ${checkinUrl ? `<div class="mono" style="margin-top:12px">${esc(checkinUrl)}</div>` : ''}
+        <div class="btn-row" style="justify-content:center">
+          <a class="btn secondary" href="${qrSrc}" download="checkin-${esc(
+              loc.slug
+            )}-qr.png">Download</a>
+          <button class="btn secondary" id="wl-qr-print">Print</button>
+        </div>
+      </div>`
+          : ''
+      }
+    </div>`;
+    wireTopBar();
+
+    document.getElementById('wl-loc').addEventListener('change', (e) => {
+      locationId = Number(e.target.value);
+      summary = null;
+      locInfo = null;
+      locInfoFor = null;
+      selectMode = false;
+      selectedId = null;
+      notice = null;
+      lastSig = '';
+      render();
+      load();
+      loadLocInfo();
+      startLive();
+    });
+
+    const callNextBtn = document.getElementById('wl-call-next');
+    if (callNextBtn) callNextBtn.addEventListener('click', callNext);
+    const selectBtn = document.getElementById('wl-select-guest');
+    if (selectBtn)
+      selectBtn.addEventListener('click', () => {
+        selectMode = !selectMode;
+        selectedId = null;
+        render();
+        const card = document.getElementById('select-guest-card');
+        if (card) card.scrollIntoView({ block: 'nearest' });
+      });
+    root.querySelectorAll('input[name="wl-select"]').forEach((r) =>
+      r.addEventListener('change', () => {
+        selectedId = Number(r.value);
+        render();
+      })
+    );
+    const callSel = document.getElementById('wl-call-selected');
+    if (callSel) callSel.addEventListener('click', () => selectedId != null && act(selectedId, 'call'));
+    const selCancel = document.getElementById('wl-select-cancel');
+    if (selCancel)
+      selCancel.addEventListener('click', () => {
+        selectMode = false;
+        selectedId = null;
+        render();
+      });
+    root.querySelectorAll('.wl-actions [data-act]').forEach((b) =>
+      b.addEventListener('click', () => act(Number(b.dataset.id), b.dataset.act))
+    );
+    const printBtn = document.getElementById('wl-qr-print');
+    if (printBtn) printBtn.addEventListener('click', () => window.print());
+  }
+
+  function startLive() {
+    if (es) es.close();
+    es = null;
+    if (pollTimer) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    try {
+      es = new EventSource(
+        `/api/waitlist/admin/events?location_id=${locationId}&token=${encodeURIComponent(getToken() || '')}`
+      );
+      es.addEventListener('waitlist', () => load());
+      es.onerror = () => {
+        if (es) es.close();
+        es = null;
+        if (!pollTimer) pollTimer = window.setInterval(load, 5000);
+      };
+    } catch {
+      pollTimer = window.setInterval(load, 5000);
+    }
+  }
+
+  init();
 
   return () => {
     if (es) es.close();
