@@ -27,6 +27,9 @@ ensureColumn('locations', 'slug', 'TEXT');
 ensureColumn('locations', 'waitlist_prefix', "TEXT NOT NULL DEFAULT 'A'");
 ensureColumn('locations', 'avg_party_minutes', 'INTEGER NOT NULL DEFAULT 5');
 ensureColumn('locations', 'waitlist_enabled', 'INTEGER NOT NULL DEFAULT 1');
+// The COUNTER_STAFF role was merged into ADMIN: promote any existing counter
+// users so they keep access with the same username/password.
+db.exec(`UPDATE users SET role = 'ADMIN' WHERE role = 'COUNTER_STAFF'`);
 // Backfill a URL-safe slug for locations created before slugs existed.
 for (const loc of db
   .prepare('SELECT id, name FROM locations WHERE slug IS NULL OR slug = ?')
