@@ -535,7 +535,7 @@ waitlistRouter.get('/admin/events', requireAuth, (req: AuthRequest, res) => {
 });
 
 // ---------- Staff: call next (oldest WAITING -> CALLED) ----------
-const staffWrite = [requireAuth, requireRole('ADMIN', 'COUNTER_STAFF')];
+const staffWrite = [requireAuth, requireRole('ADMIN')];
 
 waitlistRouter.post('/admin/call-next', ...staffWrite, (req: AuthRequest, res) => {
   const locationId = Number(req.body?.location_id);
