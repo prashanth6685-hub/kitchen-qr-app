@@ -26,7 +26,7 @@ export function normalizeCode(raw: string): string {
   return String(raw || '').trim().toUpperCase();
 }
 
-function findCode(code: string): DiscountCodeRow | undefined {
+export function findCode(code: string): DiscountCodeRow | undefined {
   return row<DiscountCodeRow>(
     `SELECT d.*, m.name AS menu_item_name FROM discount_codes d
      LEFT JOIN menu_items m ON m.id = d.menu_item_id

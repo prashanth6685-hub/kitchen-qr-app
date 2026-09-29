@@ -18,7 +18,7 @@ import {
 } from './sse.js';
 import { notifyOrderStatus } from './push.js';
 import { maybeSendReadySms } from './sms.js';
-import { applyCodeToLine, normalizeCode } from './discounts.js';
+import { applyCodeToLine, findCode, normalizeCode } from './discounts.js';
 import {
   createCheckoutSession,
   markOrderPaid,
@@ -81,11 +81,28 @@ interface OrderItemClean extends OrderItemInput {
   code_discount_cents: number;
 }
 
-function cleanItemsInput(items: any): OrderItemClean[] {
+/**
+ * Validate + normalize order lines. Only ONE discount code may be active on an
+ * order — it is applied to every line it is applicable to.
+ *
+ * Optional `applyCode` (order-level code from the Discount section):
+ *   - a code string  -> that code is applied to each applicable line (replacing
+ *                       any previous code); lines it doesn't apply to get none.
+ *   - '' (empty)      -> clears the code from every line.
+ *   - undefined       -> legacy per-line `discount_code` values are honored.
+ */
+function cleanItemsInput(items: any, applyCode?: string | null): OrderItemClean[] {
   if (!Array.isArray(items) || items.length === 0) {
     throw new Error('At least one item is required');
   }
+  const orderCode = applyCode === undefined ? undefined : normalizeCode(String(applyCode || ''));
+  if (orderCode) {
+    const dc = findCode(orderCode);
+    if (!dc) throw new Error('Discount code not found');
+    if (!dc.active) throw new Error(`Code ${dc.code} is inactive`);
+  }
   const clean: OrderItemClean[] = [];
+  let appliedLines = 0;
   for (const it of items) {
     const name = String(it.name || it.item_name || '').trim().slice(0, 120);
     const qty = Math.floor(Number(it.qty ?? it.quantity));
@@ -98,14 +115,25 @@ function cleanItemsInput(items: any): OrderItemClean[] {
     }
     const manual = Math.round(Number(it.discount_cents ?? 0));
     if (!Number.isFinite(manual) || manual < 0) throw new Error('Invalid item discount');
-    const codeRaw = it.discount_code ? normalizeCode(String(it.discount_code)) : null;
     let code: string | null = null;
     let codeDisc = 0;
-    if (codeRaw) {
-      const applied = applyCodeToLine(codeRaw, name, qty, unit);
-      if (!applied.ok) throw new Error(applied.error);
-      code = applied.code!;
-      codeDisc = applied.code_discount_cents!;
+    if (orderCode === undefined) {
+      // Legacy per-line code path.
+      const codeRaw = it.discount_code ? normalizeCode(String(it.discount_code)) : null;
+      if (codeRaw) {
+        const applied = applyCodeToLine(codeRaw, name, qty, unit);
+        if (!applied.ok) throw new Error(applied.error);
+        code = applied.code!;
+        codeDisc = applied.code_discount_cents!;
+      }
+    } else if (orderCode) {
+      // Order-level code: applies only where applicable, never errors per line.
+      const applied = applyCodeToLine(orderCode, name, qty, unit);
+      if (applied.ok) {
+        code = applied.code!;
+        codeDisc = applied.code_discount_cents!;
+        appliedLines++;
+      }
     }
     const gross = qty * unit;
     clean.push({
@@ -114,6 +142,14 @@ function cleanItemsInput(items: any): OrderItemClean[] {
       discount_code: code,
       code_discount_cents: codeDisc,
     });
+  }
+  if (orderCode && appliedLines === 0) {
+    throw new Error(`Code ${orderCode} doesn't apply to any item in this order`);
+  }
+  // Never stack: at most one distinct code across the whole order.
+  const distinct = [...new Set(clean.map((l) => l.discount_code).filter(Boolean))];
+  if (distinct.length > 1) {
+    throw new Error('Only one discount code can be applied per order');
   }
   return clean;
 }
@@ -514,7 +550,7 @@ ordersRouter.patch('/:id/items', requireRole('ADMIN'), (req: AuthRequest, res) =
   }
   let clean: OrderItemClean[];
   try {
-    clean = cleanItemsInput(req.body?.items);
+    clean = cleanItemsInput(req.body?.items, req.body?.apply_code);
   } catch (e: any) {
     return res.status(400).json({ error: e.message });
   }

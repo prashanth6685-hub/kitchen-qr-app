@@ -1534,7 +1534,7 @@ function StaffOrderDetailPage({ id }) {
   let editingRow = null; // index of the item row expanded for inline editing
   let editDirty = false; // unsaved item edits pending
   let codeBusy = false;
-  let codeErrors = {}; // per-item discount code errors, keyed by index
+  let codeError = null; // discount code error for the single order-level code field
 
   async function load() {
     try {
@@ -1548,7 +1548,7 @@ function StaffOrderDetailPage({ id }) {
         editNotes = null;
         editingRow = null;
         editDirty = false;
-        codeErrors = {};
+        codeError = null;
         render();
       }
     } catch (e) {
@@ -1702,101 +1702,83 @@ function StaffOrderDetailPage({ id }) {
         </div>` : ''}`;
   }
 
-  // Discount codes only — one compact row per item, placed before the payment card.
+  // Discount: ONE code per order. It is applied server-side to every line it is
+  // valid for (item-restricted codes only touch their item) — never stacked.
   function discountCardHTML() {
     if (!editable()) return '';
+    const activeCode =
+      [...new Set(order.items.map((it) => it.discount_code).filter(Boolean))][0] || null;
+    const codeTotal = order.items.reduce(
+      (s, it) => s + (it.discount_code ? (it.discount_cents || 0) + (it.code_discount_cents || 0) : 0),
+      0
+    );
     return `
       <div class="card">
         <h2>Discount</h2>
-        <p class="sub" style="margin-top:0">Apply a discount code per item. Manage codes in
-          <a class="link" href="/staff/discounts">Discounts</a>.</p>
-        ${order.items
-          .map((it, i) => {
-            const ld = (it.discount_cents || 0) + (it.code_discount_cents || 0);
-            return `
-          <div class="item-row" style="align-items:center">
-            <span>${esc(it.item_name)} <b>×${it.quantity}</b>
-              ${it.discount_code ? `<br /><span class="sub">Discount (${esc(it.discount_code)}) −${money(ld)}</span>` : ''}
-            </span>
-            <span style="display:flex;gap:6px;align-items:center">
-              ${it.discount_code
-                ? `<button class="btn secondary sm" data-code-rm="${i}" ${codeBusy ? 'disabled' : ''}>Remove</button>`
-                : `<input id="code-${i}" placeholder="CODE" autocapitalize="characters"
-                     style="max-width:100px;text-transform:uppercase" />
-                   <button class="btn secondary sm" data-code-apply="${i}" ${codeBusy ? 'disabled' : ''}>Apply</button>`}
-            </span>
-          </div>
-          ${codeErrors[i] ? `<div class="error" style="margin:0 0 8px">${esc(codeErrors[i])}</div>` : ''}`;
-          })
-          .join('')}
+        <p class="sub" style="margin-top:0">One code per order — it applies automatically to every
+          item it is valid for. Manage codes in <a class="link" href="/staff/discounts">Discounts</a>.</p>
+        ${
+          activeCode
+            ? `<div class="item-row" style="align-items:center">
+                 <span>Discount (<b>${esc(activeCode)}</b>) <span class="sub">−${money(codeTotal)}</span></span>
+                 <button class="btn secondary sm" id="code-remove" ${codeBusy ? 'disabled' : ''}>Remove</button>
+               </div>`
+            : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                 <input id="order-code" placeholder="CODE" autocapitalize="characters"
+                   style="max-width:140px;text-transform:uppercase" />
+                 <button class="btn secondary sm" id="code-apply" ${codeBusy ? 'disabled' : ''}>${
+                   codeBusy ? 'Applying…' : 'Apply'
+                 }</button>
+               </div>`
+        }
+        ${codeError ? `<div class="error" style="margin:8px 0 0">${esc(codeError)}</div>` : ''}
       </div>`;
   }
 
-  function codeLines(withCode, idx) {
-    return order.items.map((it, j) => ({
+  // Lines as they stand on the server (per-line codes are set via apply_code).
+  function currentLines() {
+    return order.items.map((it) => ({
       name: it.item_name,
       qty: it.quantity,
       unit_price: it.unit_price_cents,
       discount_cents: it.discount_cents || 0,
-      discount_code: j === idx ? withCode : it.discount_code || null,
     }));
   }
 
-  async function applyCode(i) {
-    const input = document.getElementById(`code-${i}`);
-    const code = (input ? input.value : '').trim();
-    if (!code) {
-      showNotice('Enter a discount code first.');
-      return;
-    }
-    if (editDirty) {
-      showNotice('Save your item changes first, then apply the code.');
-      return;
-    }
-    codeBusy = true;
-    codeErrors[i] = null;
-    error = null;
-    render();
-    try {
-      const res = await api('/api/discount-codes/validate', {
-        method: 'POST',
-        body: JSON.stringify({ code, item_name: order.items[i].item_name }),
-      });
-      await api(`/api/orders/${order.id}/items`, {
-        method: 'PATCH',
-        body: JSON.stringify({ items: codeLines(res.code, i) }),
-      });
-      codeBusy = false;
-      showNotice(`Discount (${res.code}) applied.`);
-      await load();
-    } catch (e) {
-      codeBusy = false;
-      codeErrors[i] = e.message;
-      render();
-    }
-  }
-
-  async function removeCode(i) {
+  async function sendOrderCode(applyCode) {
     if (editDirty) {
       showNotice('Save your item changes first, then change the discount.');
       return;
     }
     codeBusy = true;
+    codeError = null;
     error = null;
     render();
     try {
       await api(`/api/orders/${order.id}/items`, {
         method: 'PATCH',
-        body: JSON.stringify({ items: codeLines(null, i) }),
+        body: JSON.stringify({ items: currentLines(), apply_code: applyCode }),
       });
       codeBusy = false;
-      showNotice('Discount code removed.');
       await load();
+      const code =
+        [...new Set(order.items.map((it) => it.discount_code).filter(Boolean))][0] || null;
+      showNotice(code ? `Discount (${code}) applied.` : 'Discount code removed.');
     } catch (e) {
       codeBusy = false;
-      error = e.message;
+      codeError = e.message;
       render();
     }
+  }
+
+  async function applyOrderCode() {
+    const input = document.getElementById('order-code');
+    const code = (input ? input.value : '').trim();
+    if (!code) {
+      showNotice('Enter a discount code first.');
+      return;
+    }
+    await sendOrderCode(code);
   }
 
   function render() {
@@ -2018,23 +2000,19 @@ function StaffOrderDetailPage({ id }) {
         }
       });
 
-    // --- discount codes (admin, before payment) ---
-    root.querySelectorAll('[data-code-apply]').forEach((b) =>
-      b.addEventListener('click', () => applyCode(Number(b.dataset.codeApply)))
-    );
-    root.querySelectorAll('[data-code-rm]').forEach((b) =>
-      b.addEventListener('click', () => removeCode(Number(b.dataset.codeRm)))
-    );
-    order.items.forEach((it, i) => {
-      const input = document.getElementById(`code-${i}`);
-      if (input)
-        input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            applyCode(i);
-          }
-        });
-    });
+    // --- discount code (admin, before payment): one code per order ---
+    const codeApplyBtn = document.getElementById('code-apply');
+    if (codeApplyBtn) codeApplyBtn.addEventListener('click', applyOrderCode);
+    const codeRemoveBtn = document.getElementById('code-remove');
+    if (codeRemoveBtn) codeRemoveBtn.addEventListener('click', () => sendOrderCode(''));
+    const orderCodeInput = document.getElementById('order-code');
+    if (orderCodeInput)
+      orderCodeInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          applyOrderCode();
+        }
+      });
   }
 
   load();

@@ -200,6 +200,48 @@ s, d = req("GET", f"/api/orders/{oid4}", token=counter_tok)
 bir = next(i for i in d["items"] if i["item_name"] == "Chicken Biryani")
 check("history survives code deletion", bir["discount_code"] == "BIRYANI5" and bir["code_discount_cents"] == 1000, str(bir))
 
+print("== single order-level discount code ==")
+s, d = req("POST", "/api/orders", token=counter_tok, body={"items": [
+    {"name": "Chicken Biryani", "qty": 2, "unit_price": 1299},
+    {"name": "Garlic Naan", "qty": 2, "unit_price": 349},
+]})
+check("code-test order created", s == 201, f"got {s} {d}")
+oid6 = d["id"]
+def o6items():
+    return {i["item_name"]: i for i in req("GET", f"/api/orders/{oid6}", token=counter_tok)[1]["items"]}
+base6 = [{"name": "Chicken Biryani", "qty": 2, "unit_price": 1299},
+         {"name": "Garlic Naan", "qty": 2, "unit_price": 349}]
+# item-restricted code applies only to its item
+s, d = req("PATCH", f"/api/orders/{oid6}/items", token=counter_tok, body={"items": base6, "apply_code": "BIRYANI5"})
+check("apply_code restricted: only its item", s == 200, f"got {s} {d}")
+its = o6items()
+check("biryani got the code", its["Chicken Biryani"]["discount_code"] == "BIRYANI5" and its["Chicken Biryani"]["code_discount_cents"] == 1000, str(its["Chicken Biryani"]))
+check("naan untouched by restricted code", its["Garlic Naan"]["discount_code"] is None and its["Garlic Naan"]["code_discount_cents"] == 0, str(its["Garlic Naan"]))
+# unrestricted code applies to every line, replacing the previous one (no stacking)
+s, d = req("PATCH", f"/api/orders/{oid6}/items", token=counter_tok, body={"items": base6, "apply_code": "WELCOME10"})
+check("apply_code replaces previous code", s == 200, f"got {s} {d}")
+its = o6items()
+check("welcome10 on all lines", all(i["discount_code"] == "WELCOME10" for i in its.values()), str(its))
+check("percent math per line", its["Chicken Biryani"]["code_discount_cents"] == 260 and its["Garlic Naan"]["code_discount_cents"] == 70, str(its))
+# clearing
+s, d = req("PATCH", f"/api/orders/{oid6}/items", token=counter_tok, body={"items": base6, "apply_code": ""})
+check("apply_code empty clears", s == 200 and all(i["discount_code"] is None for i in o6items().values()), f"got {s}")
+# unknown code
+s, d = req("PATCH", f"/api/orders/{oid6}/items", token=counter_tok, body={"items": base6, "apply_code": "NOPE"})
+check("unknown apply_code rejected", s == 400, f"got {s} {d}")
+# valid code that matches nothing in the order
+s, d = req("POST", "/api/orders", token=counter_tok, body={"items": [{"name": "Garlic Naan", "qty": 1, "unit_price": 349}]})
+oid7 = d["id"]
+s, d = req("PATCH", f"/api/orders/{oid7}/items", token=counter_tok, body={
+    "items": [{"name": "Garlic Naan", "qty": 1, "unit_price": 349}], "apply_code": "BIRYANI5"})
+check("code matching no items rejected", s == 400, f"got {s} {d}")
+# two distinct per-line codes can never stack, even via the legacy path
+s, d = req("POST", "/api/orders", token=counter_tok, body={"items": [
+    {"name": "Chicken Biryani", "qty": 1, "unit_price": 1299, "discount_code": "BIRYANI5"},
+    {"name": "Garlic Naan", "qty": 1, "unit_price": 349, "discount_code": "WELCOME10"},
+]})
+check("stacked codes rejected", s == 400, f"got {s} {d}")
+
 print("== sales report ==")
 s, d = req("GET", "/api/orders/report/summary")
 check("report requires login", s == 401, f"got {s}")
