@@ -906,6 +906,7 @@ function StaffOrderDetailPage({ id }) {
         </p>
       </div>`
           : `
+      ${order.order_status === 'PAID' ? `<div class="card"><div class="info">💡 Next step: open the <a class="link" href="/kitchen">Kitchen page</a> and tap <b>Accept order</b> to start preparing it.</div></div>` : ''}
       <div class="card qr-box">
         <h2>✅ Payment confirmed</h2>
         <p class="sub">Show this QR code to the customer — scanning opens their live order page.</p>
@@ -970,7 +971,7 @@ function StaffOrderDetailPage({ id }) {
 
 /* ------------------------- kitchen display ------------------------- */
 
-const KITCHEN_ACTIVE = ['RECEIVED', 'PREPARING', 'READY'];
+const KITCHEN_ACTIVE = ['PAID', 'RECEIVED', 'PREPARING', 'READY'];
 
 function KitchenDisplayPage() {
   const user = getUser();
@@ -1047,7 +1048,9 @@ function KitchenDisplayPage() {
                 canUpdate
                   ? `<div class="btn-row" style="margin-top:12px">
                   ${
-                    o.order_status === 'RECEIVED'
+                    o.order_status === 'PAID'
+                      ? `<button class="btn warn block" data-act="RECEIVED" ${busyId === o.id ? 'disabled' : ''}>📥 Accept order</button>`
+                      : o.order_status === 'RECEIVED'
                       ? `<button class="btn warn block" data-act="PREPARING" ${busyId === o.id ? 'disabled' : ''}>Start preparing</button>`
                       : o.order_status === 'PREPARING'
                       ? `<button class="btn block" data-act="READY" ${busyId === o.id ? 'disabled' : ''}>✅ MARK READY</button>`
