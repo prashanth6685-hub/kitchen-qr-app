@@ -573,7 +573,6 @@ function NewOrderPage() {
   let customLines = [];
   let error = null;
   let busy = false;
-  let created = null;
 
   async function init() {
     try {
@@ -607,8 +606,6 @@ function NewOrderPage() {
   }
 
   function render() {
-    if (created) return renderCreated();
-
     const list = items();
     const tot = total();
     root.innerHTML = `
@@ -742,67 +739,14 @@ function NewOrderPage() {
     };
     render();
     try {
-      created = await api('/api/orders', { method: 'POST', body: JSON.stringify(payload) });
-      busy = false;
-      render();
+      const created = await api('/api/orders', { method: 'POST', body: JSON.stringify(payload) });
+      go(`/staff/orders/${created.id}`);
+      return;
     } catch (e) {
       busy = false;
       error = e.message;
       preserveAndRender();
     }
-  }
-
-  async function collectPayment(kind) {
-    if (!created) return;
-    busy = true;
-    setError(null);
-    render();
-    try {
-      await api(`/api/orders/${created.id}/payments/${kind}`, { method: 'POST' });
-      go(`/staff/orders/${created.id}`);
-    } catch (e) {
-      busy = false;
-      error = e.message;
-      render();
-    }
-  }
-
-  function renderCreated() {
-    root.innerHTML = `
-    ${topBar()}
-    <div class="page">
-      <div class="card" style="text-align:center;margin-top:24px">
-        <h1>Order #${created.order_number}</h1>
-        <div class="big" style="font-size:34px;font-weight:800;margin:8px 0">${money(created.total_cents)}</div>
-        <p class="sub">Collect payment, then show the customer the QR code.</p>
-        <div class="error" id="form-error" style="display:${error ? 'block' : 'none'}">${esc(error || '')}</div>
-        <div class="btn-row">
-          ${
-            created.checkout_url
-              ? `<a class="btn" href="${esc(created.checkout_url)}" target="_blank" rel="noreferrer">💳 Pay by card (Stripe)</a>`
-              : ''
-          }
-          <button class="btn" id="pay-cash" ${busy ? 'disabled' : ''}>💵 Cash received</button>
-          ${
-            created.demo_payments
-              ? `<button class="btn warn" id="pay-demo" ${busy ? 'disabled' : ''}>🧪 Demo card payment</button>`
-              : ''
-          }
-        </div>
-        ${
-          !created.stripe_configured
-            ? `<p class="sub" style="margin-top:12px">Stripe isn't configured — add STRIPE_SECRET_KEY to accept real card payments.</p>`
-            : ''
-        }
-        <div class="btn-row" style="margin-top:16px">
-          <a class="btn secondary" href="/staff/orders/${created.id}">View order →</a>
-        </div>
-      </div>
-    </div>`;
-    wireTopBar();
-    document.getElementById('pay-cash').addEventListener('click', () => collectPayment('cash'));
-    const demo = document.getElementById('pay-demo');
-    if (demo) demo.addEventListener('click', () => collectPayment('demo'));
   }
 
   init();
