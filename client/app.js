@@ -2524,33 +2524,14 @@ const WL_STATUS_LABELS = {
 
 // Buttons shown per entry status on the staff dashboard. Only sensible
 // transitions are offered (the backend also enforces them with 409s).
-const WL_ACTIONS = {
-  WAITING: [
-    ['almost-ready', 'ALMOST READY', 'secondary'],
-    ['call', 'CALL', ''],
-    ['no-show', 'NO SHOW', 'warn'],
-    ['cancel', 'CANCEL', 'danger'],
-  ],
-  ALMOST_READY: [
-    ['call', 'CALL', ''],
-    ['skip', 'SKIP', 'warn'],
-    ['no-show', 'NO SHOW', 'warn'],
-    ['cancel', 'CANCEL', 'danger'],
-  ],
-  CALLED: [
-    ['seated', 'SEATED', ''],
-    ['recall', 'RECALL', 'secondary'],
-    ['skip', 'SKIP', 'warn'],
-    ['no-show', 'NO SHOW', 'warn'],
-    ['restore', 'MOVE BACK TO WAITING', 'secondary'],
-    ['cancel', 'CANCEL', 'danger'],
-  ],
-  SKIPPED: [
-    ['restore', 'MOVE BACK TO WAITING', 'secondary'],
-    ['call', 'CALL', ''],
-    ['no-show', 'NO SHOW', 'warn'],
-    ['cancel', 'CANCEL', 'danger'],
-  ],
+// Staff waitlist: each entry gets exactly ONE primary action — the natural next
+// step for its status. Cancel is always available too, but behind a confirm
+// popup (see confirmCancel in StaffWaitlistPage).
+const WL_PRIMARY_ACTION = {
+  WAITING: ['call', 'CALL', ''],
+  ALMOST_READY: ['call', 'CALL', ''],
+  CALLED: ['seated', 'SEATED', ''],
+  SKIPPED: ['call', 'CALL', ''],
 };
 
 // Shared "enable push notifications" card for the customer waitlist pages.
@@ -2737,9 +2718,7 @@ function CheckinPage({ slug }) {
 
     const waitLine =
       loc.queue_length > 0
-        ? `${loc.queue_length} ${loc.queue_length === 1 ? 'party' : 'parties'} waiting${
-            loc.estimated_wait_label ? ` · about ${esc(loc.estimated_wait_label)}` : ''
-          }`
+        ? `${loc.queue_length} ${loc.queue_length === 1 ? 'party' : 'parties'} waiting`
         : 'No wait right now — check in and we’ll seat you soon.';
 
     root.innerHTML = `
@@ -2786,7 +2765,6 @@ function CheckinPage({ slug }) {
         <div class="stat-grid" style="margin-top:16px">
           <div class="stat"><div class="v">${e.party_size}</div><div class="l">Guests</div></div>
           <div class="stat"><div class="v">${e.parties_ahead}</div><div class="l">Ahead of you</div></div>
-          <div class="stat"><div class="v" style="font-size:16px">${esc(e.estimated_wait_label)}</div><div class="l">Est. wait</div></div>
         </div>
       </div>
       <div class="card qr-box">
@@ -3005,7 +2983,6 @@ function WaitlistTrackingPage({ token }) {
           <div class="stat"><div class="v">${e.party_size}</div><div class="l">Guests</div></div>
           <div class="stat"><div class="v">${esc(e.currently_serving || '—')}</div><div class="l">Now serving</div></div>
           <div class="stat"><div class="v">${e.parties_ahead}</div><div class="l">Ahead of you</div></div>
-          <div class="stat"><div class="v" style="font-size:16px">${esc(e.estimated_wait_label)}</div><div class="l">Est. wait</div></div>
         </div>
       </div>
 
@@ -3105,6 +3082,7 @@ function StaffWaitlistPage() {
   let busy = null; // 'call-next' or `<action>:<id>`
   let notice = null;
   let noticeKind = 'ok';
+  let confirmCancel = null; // { id, num } — "are you sure?" modal for cancel
   let lastSig = '';
   let es = null;
   let pollTimer = null;
@@ -3202,7 +3180,7 @@ function StaffWaitlistPage() {
   }
 
   function entryRow(e) {
-    const actions = WL_ACTIONS[e.status] || [];
+    const primary = WL_PRIMARY_ACTION[e.status];
     return `
     <div class="wl-row">
       <div class="wl-num">${esc(e.queue_number)}</div>
@@ -3219,15 +3197,15 @@ function StaffWaitlistPage() {
         </div>
       </div>
       ${
-        canWrite && actions.length
-          ? `<div class="wl-actions">${actions
-              .map(
-                ([a, label, kind]) =>
-                  `<button class="btn sm ${kind}" data-act="${a}" data-id="${e.id}" ${
-                    busy === `${a}:${e.id}` ? 'disabled' : ''
-                  }>${busy === `${a}:${e.id}` ? '…' : label}</button>`
-              )
-              .join('')}</div>`
+        canWrite && primary
+          ? `<div class="wl-actions">
+               <button class="btn sm ${primary[2]}" data-act="${primary[0]}" data-id="${e.id}" ${
+              busy === `${primary[0]}:${e.id}` ? 'disabled' : ''
+            }>${busy === `${primary[0]}:${e.id}` ? '…' : primary[1]}</button>
+               <button class="btn sm danger" data-confirm-cancel="${e.id}" data-num="${esc(
+              e.queue_number
+            )}">CANCEL</button>
+             </div>`
           : ''
       }
     </div>`;
@@ -3287,6 +3265,22 @@ function StaffWaitlistPage() {
 
     const qrSrc = loc.slug ? `/api/waitlist/location/${encodeURIComponent(loc.slug)}/qr.png` : null;
     const checkinUrl = locInfo && locInfo.checkin_url ? locInfo.checkin_url : '';
+
+    const cancelModal = confirmCancel
+      ? `
+      <div class="modal-overlay" id="wl-cancel-overlay">
+        <div class="modal-card">
+          <h2>Cancel ${esc(confirmCancel.num)}?</h2>
+          <p class="sub">Are you sure you want to cancel this waitlist entry? This can't be undone.</p>
+          <div class="btn-row" style="justify-content:center;margin-top:12px">
+            <button class="btn danger" id="wl-cancel-yes" ${
+              busy ? 'disabled' : ''
+            }>${busy ? 'Cancelling…' : 'YES, CANCEL'}</button>
+            <button class="btn secondary" id="wl-cancel-no">NO, GO BACK</button>
+          </div>
+        </div>
+      </div>`
+      : '';
 
     root.innerHTML = `
     ${topBar()}
@@ -3372,7 +3366,8 @@ function StaffWaitlistPage() {
       </div>`
           : ''
       }
-    </div>`;
+    </div>
+    ${cancelModal}`;
     wireTopBar();
 
     document.getElementById('wl-loc').addEventListener('change', (e) => {
@@ -3419,6 +3414,33 @@ function StaffWaitlistPage() {
     root.querySelectorAll('.wl-actions [data-act]').forEach((b) =>
       b.addEventListener('click', () => act(Number(b.dataset.id), b.dataset.act))
     );
+    root.querySelectorAll('.wl-actions [data-confirm-cancel]').forEach((b) =>
+      b.addEventListener('click', () => {
+        confirmCancel = { id: Number(b.dataset.confirmCancel), num: b.dataset.num };
+        render();
+      })
+    );
+    const cancelYes = document.getElementById('wl-cancel-yes');
+    if (cancelYes)
+      cancelYes.addEventListener('click', () => {
+        const id = confirmCancel.id;
+        confirmCancel = null;
+        act(id, 'cancel');
+      });
+    const cancelNo = document.getElementById('wl-cancel-no');
+    if (cancelNo)
+      cancelNo.addEventListener('click', () => {
+        confirmCancel = null;
+        render();
+      });
+    const cancelOverlay = document.getElementById('wl-cancel-overlay');
+    if (cancelOverlay)
+      cancelOverlay.addEventListener('click', (e) => {
+        if (e.target === cancelOverlay) {
+          confirmCancel = null;
+          render();
+        }
+      });
     const printBtn = document.getElementById('wl-qr-print');
     if (printBtn) printBtn.addEventListener('click', () => window.print());
   }

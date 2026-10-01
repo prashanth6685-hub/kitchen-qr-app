@@ -363,5 +363,13 @@ check("empty range is empty", s == 200 and d["orders"] == 0 and d["items"] == []
 s, d = req("GET", f"/api/orders/{oid5}", token=counter_tok)
 check("completed_at stamped", s == 200 and bool(d.get("completed_at")), f"got {s} {d.get('completed_at')}")
 
+print("== waitlist client checks (static) ==")
+import os as _os
+_client = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "client", "app.js")
+_src = open(_client, encoding="utf-8").read()
+check("no estimated wait shown to customers", "estimated_wait_label" not in _src and "Est. wait" not in _src)
+check("single primary action per waitlist row", "WL_ACTIONS" not in _src and "WL_PRIMARY_ACTION" in _src)
+check("cancel asks are-you-sure", all(x in _src for x in ("data-confirm-cancel", "wl-cancel-yes", "wl-cancel-no", "Are you sure")))
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
