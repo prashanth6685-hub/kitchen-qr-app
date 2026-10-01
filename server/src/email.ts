@@ -10,7 +10,7 @@
  * nothing but is best-effort — the customer must pick their carrier, and
  * delivery can be slow or lossy. Keep gateway texts short.
  */
-import nodemailer from 'nodemailer';
+import nodemailer, { type Transporter } from 'nodemailer';
 import { EMAIL_RE } from './emailValidation.js';
 
 const GMAIL_USER = process.env.GMAIL_USER || '';
@@ -24,8 +24,8 @@ if (emailEnabled) {
   console.log('[email] GMAIL_USER / GMAIL_APP_PASSWORD not set — email notifications disabled.');
 }
 
-let transporter: nodemailer.Transporter | null = null;
-function getTransporter(): nodemailer.Transporter | null {
+let transporter: Transporter | null = null;
+function getTransporter(): Transporter | null {
   if (!emailEnabled) return null;
   if (!transporter) {
     transporter = nodemailer.createTransport({
