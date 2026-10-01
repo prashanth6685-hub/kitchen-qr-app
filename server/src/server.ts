@@ -18,6 +18,7 @@ import { waitlistRouter } from './waitlist.js';
 import { discountsRouter } from './discounts.js';
 import { handleStripeWebhook, stripeConfigured } from './payments.js';
 import { saveSubscription, getVapidPublicKey, pushEnabled } from './push.js';
+import { emailEnabled } from './email.js';
 import { EMAIL_RE, emailDomainReceivesMail } from './emailValidation.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -242,7 +243,9 @@ app.use('/api/orders', ordersRouter);
 app.use('/api/waitlist', waitlistRouter);
 app.use('/api/discount-codes', discountsRouter);
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+app.get('/api/health', (_req, res) =>
+  res.json({ ok: true, time: new Date().toISOString(), email: emailEnabled })
+);
 
 // ---------- Serve the client (PWA, zero build step) ----------
 const clientDir = join(__dirname, '..', '..', 'client');

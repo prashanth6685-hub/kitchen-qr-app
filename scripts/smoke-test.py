@@ -397,6 +397,8 @@ s, d = req("GET", f"/api/waitlist/token/{wl_pub}")
 check("cancelled entry keeps recall history publicly", s == 200 and d["status"] == "CANCELLED" and d["recall_count"] == 3 and bool(d["called_time"]), f"got {s}")
 
 print("== free notifications: email + gateway sms ==")
+s, d = req("GET", "/api/health")
+check("health reports email flag", s == 200 and "email" in d, f"got {s} {d}")
 import subprocess as _sp
 _unit_ts = "/tmp/qa_email_unit.ts"
 open(_unit_ts, "w").write('''
