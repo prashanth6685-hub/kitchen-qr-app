@@ -2606,9 +2606,6 @@ function CheckinPage({ slug }) {
   let loadError = null; // 'invalid' | 'disabled' | <message>
   let busy = false;
   let formError = null;
-  let confirmed = null; // check-in response entry json
-  let isDuplicate = false;
-  let push = null;
 
   async function init() {
     try {
@@ -2657,18 +2654,8 @@ function CheckinPage({ slug }) {
           ...(notes ? { special_requirements: notes } : {}),
         }),
       });
-      isDuplicate = !!data.duplicate;
-      confirmed = data;
-      push = makePushController(render, {
-        token: data.public_token,
-        subscribePath: '/api/waitlist/notifications/subscribe',
-        doneMessage: "We'll notify you when your table is almost ready.",
-        blurb: "We'll notify you when your table is almost ready and when it's your turn.",
-      });
-      push.init();
-      busy = false;
-      render();
-      window.scrollTo(0, 0);
+      // Checked in: go straight to the tracking page — no intermediate screen.
+      go(`/wait/${encodeURIComponent(data.public_token)}`);
     } catch (err) {
       busy = false;
       formError = err.message;
@@ -2711,11 +2698,6 @@ function CheckinPage({ slug }) {
       root.innerHTML = '<div class="page"><div class="card empty">Loading…</div></div>';
       return;
     }
-    if (confirmed) {
-      renderConfirmed();
-      return;
-    }
-
     const waitLine =
       loc.queue_length > 0
         ? `${loc.queue_length} ${loc.queue_length === 1 ? 'party' : 'parties'} waiting`
@@ -2742,44 +2724,6 @@ function CheckinPage({ slug }) {
       </div>
     </div>`;
     document.getElementById('wl-checkin-form').addEventListener('submit', submit);
-  }
-
-  function renderConfirmed() {
-    const e = confirmed;
-    // qr_url is only contract-guaranteed on the token endpoint, so build it
-    // from the public token here (same shape the backend uses).
-    const qrSrc = `/api/waitlist/token/${encodeURIComponent(e.public_token)}/qr.png`;
-    root.innerHTML = `
-    <div class="page">
-      <div class="topbar" style="position:static;border-radius:14px;margin-bottom:4px">
-        <div class="brand"><span>●</span> ${esc(e.restaurant_name || '')}</div>
-      </div>
-      <div class="card" style="text-align:center">
-        ${
-          isDuplicate
-            ? `<div class="info">You already have an active entry — we didn't create a second one.</div>`
-            : `<h2 style="margin-top:0">You're checked in!</h2>`
-        }
-        <div class="sub" style="margin-bottom:0">Your number</div>
-        <div class="queue-big">${esc(e.queue_number)}</div>
-        <div class="stat-grid" style="margin-top:16px">
-          <div class="stat"><div class="v">${e.party_size}</div><div class="l">Guests</div></div>
-          <div class="stat"><div class="v">${e.parties_ahead}</div><div class="l">Ahead of you</div></div>
-        </div>
-      </div>
-      <div class="card qr-box">
-        <h2>Your QR code</h2>
-        <p class="sub">Scan this to return to your waitlist page.</p>
-        <img src="${esc(qrSrc)}" alt="Waitlist QR code ${esc(e.queue_number)}" />
-      </div>
-      <div id="wl-push"></div>
-      <div class="card" style="text-align:center">
-        <a class="btn block" href="/wait/${encodeURIComponent(e.public_token)}">Track my place in line →</a>
-      </div>
-    </div>`;
-    const box = document.getElementById('wl-push');
-    box.innerHTML = push.html();
-    push.bind();
   }
 
   init();

@@ -369,7 +369,8 @@ _client = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "cli
 _src = open(_client, encoding="utf-8").read()
 check("no estimated wait shown to customers", "estimated_wait_label" not in _src and "Est. wait" not in _src)
 check("single primary action per waitlist row", "WL_ACTIONS" not in _src and "WL_PRIMARY_ACTION" in _src)
-check("cancel asks are-you-sure", all(x in _src for x in ("data-confirm-cancel", "wl-cancel-yes", "wl-cancel-no", "Are you sure")))
+check("check-in goes straight to tracking", "renderConfirmed" not in _src and "You're checked in" not in _src)
+check("check-in navigates to /wait/<token>", "go(`/wait/${encodeURIComponent(data.public_token)}`)" in _src)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
