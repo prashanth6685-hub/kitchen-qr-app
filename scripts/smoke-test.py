@@ -372,6 +372,7 @@ wl_loc = d[0]
 s, d = req("POST", "/api/waitlist/check-in", body={"location_id": wl_loc["id"], "customer_name": "Recall Test", "party_size": 2})
 check("waitlist check-in works", s == 201 and "public_token" in d, f"got {s} {d}")
 qn = d["queue_number"]
+wl_pub = d["public_token"]
 s, d = req("GET", f"/api/waitlist/admin/summary?location_id={wl_loc['id']}", token=counter_tok)
 wl_id = next(e["id"] for e in d["entries"] if e["queue_number"] == qn)
 s, d = req("POST", f"/api/waitlist/{wl_id}/call", token=counter_tok)
@@ -388,6 +389,12 @@ s, d = req("POST", f"/api/waitlist/{wl_waiting}/recall", token=counter_tok)
 check("recall on WAITING entry rejected", s == 409, f"got {s} {d}")
 s, d = req("POST", f"/api/waitlist/{wl_waiting}/almost-ready", token=counter_tok)
 check("almost-ready action removed", s == 404, f"got {s} {d}")
+s, d = req("GET", f"/api/waitlist/token/{wl_pub}")
+check("public entry shows called_time and recall_count", s == 200 and d["status"] == "CALLED" and d["recall_count"] == 3 and bool(d["called_time"]), f"got {s} {d.get('status')} {d.get('recall_count')}")
+s, d = req("POST", f"/api/waitlist/{wl_id}/cancel", token=counter_tok)
+check("cancel a called entry", s == 200 and d["status"] == "CANCELLED", f"got {s} {d}")
+s, d = req("GET", f"/api/waitlist/token/{wl_pub}")
+check("cancelled entry keeps recall history publicly", s == 200 and d["status"] == "CANCELLED" and d["recall_count"] == 3 and bool(d["called_time"]), f"got {s}")
 
 print("== waitlist client checks (static) ==")
 import os as _os
@@ -403,6 +410,8 @@ check("temp quick test login is gated", "quick-login-btn" in _src and "get('test
 check("username rule is min 5 only", "Min 5 characters (letters, numbers, . _ -)." in _src and "or 4 characters" not in _src)
 check("CALLED rows have CALL AGAIN button", 'data-act="recall"' in _src and "CALL AGAIN" in _src)
 check("customer texts don't promise almost-ready push", "your table is almost ready" not in _src.lower())
+check("customer timeline has no almost-ready step", "Almost your turn', 'Called'" not in _src)
+check("customer page shows recall count", "Reminder ${e.recall_count}" in _src and "you were reminded ${rc}" in _src)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

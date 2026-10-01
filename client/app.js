@@ -2859,13 +2859,18 @@ function WaitlistTrackingPage({ token }) {
     }
   }
 
-  function stepsHTML(status) {
-    const labels = ['Checked in', 'Waiting', 'Almost your turn', 'Called', 'Seated'];
-    const idx = { WAITING: 1, ALMOST_READY: 2, CALLED: 3, SEATED: 4, SKIPPED: 3 }[status] ?? 1;
+  // reached: for terminal states, the highest step index the entry actually got to
+  // (no "current" step is highlighted then).
+  function stepsHTML(status, reached = null) {
+    const labels = ['Checked in', 'Waiting', 'Called', 'Seated'];
+    const liveIdx = { WAITING: 1, ALMOST_READY: 2, CALLED: 2, SEATED: 3, SKIPPED: 2 }[status] ?? 1;
+    const idx = reached !== null ? reached : liveIdx;
+    const isFinal = reached !== null;
     return `<ul class="steps">${labels
       .map((label, i) => {
-        const cls = i < idx ? 'done' : i === idx ? 'current' : '';
-        return `<li class="${cls}"><span class="dot">${i < idx ? '✓' : i + 1}</span><span>${label}</span></li>`;
+        const done = isFinal ? i <= idx : i < idx;
+        const cls = done ? 'done' : !isFinal && i === idx ? 'current' : '';
+        return `<li class="${cls}"><span class="dot">${done ? '✓' : i + 1}</span><span>${label}</span></li>`;
       })
       .join('')}</ul>`;
   }
@@ -2908,13 +2913,28 @@ function WaitlistTrackingPage({ token }) {
 
     let statusCard = '';
     if (terminal) {
-      const note =
-        e.status === 'CANCELLED'
-          ? 'Your waitlist entry was cancelled.'
-          : e.status === 'NO_SHOW'
-          ? 'You were marked as a no-show. Please check with the host stand if you still need a table.'
-          : 'This waitlist entry has expired.';
-      statusCard = `<div class="card"><div class="info">${esc(note)}</div></div>`;
+      if (e.status === 'CANCELLED') {
+        const wasCalled = !!e.called_time;
+        const rc = e.recall_count || 0;
+        const journey = wasCalled
+          ? rc > 0
+            ? `Your table was called, and you were reminded ${rc}× before this entry was cancelled.`
+            : `Your table was called before this entry was cancelled.`
+          : `You were still waiting in line when this entry was cancelled.`;
+        statusCard = `
+      <div class="card">
+        <h2>Queue status</h2>
+        ${stepsHTML(e.status, wasCalled ? 2 : 1)}
+        <div class="info" style="margin-top:10px">${esc(journey)}</div>
+        <div class="info" style="margin-top:10px">Your waitlist entry was cancelled.</div>
+      </div>`;
+      } else {
+        const note =
+          e.status === 'NO_SHOW'
+            ? 'You were marked as a no-show. Please check with the host stand if you still need a table.'
+            : 'This waitlist entry has expired.';
+        statusCard = `<div class="card"><div class="info">${esc(note)}</div></div>`;
+      }
     } else if (e.status === 'SEATED') {
       statusCard = `<div class="card"><div class="ok">You're seated — enjoy your meal!</div>${stepsHTML(e.status)}</div>`;
     } else {
@@ -2966,6 +2986,11 @@ function WaitlistTrackingPage({ token }) {
     }</div>
         <div class="queue-big">${esc(e.queue_number)}</div>
         <div class="big" style="font-size:22px;margin-top:6px">${esc(statusLabel)}</div>
+        ${
+          e.status === 'CALLED' && e.recall_count > 0
+            ? `<div class="sub" style="margin-top:6px">Reminder ${e.recall_count}× — please come to the host stand</div>`
+            : ''
+        }
         <div class="stat-grid" style="margin-top:16px">
           <div class="stat"><div class="v">${e.party_size}</div><div class="l">Guests</div></div>
           <div class="stat"><div class="v">${esc(e.currently_serving || '—')}</div><div class="l">Now serving</div></div>
