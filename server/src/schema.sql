@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS orders (
   order_number INTEGER NOT NULL,
   customer_name TEXT,
   customer_phone TEXT,
+  customer_email TEXT,
+  customer_carrier TEXT,
   special_instructions TEXT,
   total_cents INTEGER NOT NULL,
   discount_cents INTEGER NOT NULL DEFAULT 0,
@@ -138,6 +140,8 @@ CREATE TABLE IF NOT EXISTS waitlist_entries (
   queue_number TEXT NOT NULL,
   customer_name TEXT NOT NULL,
   customer_phone TEXT,
+  customer_email TEXT,
+  customer_carrier TEXT,
   party_size INTEGER NOT NULL DEFAULT 1,
   special_requirements TEXT,
   status TEXT NOT NULL DEFAULT 'WAITING'

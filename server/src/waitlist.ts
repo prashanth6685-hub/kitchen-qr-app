@@ -17,6 +17,7 @@ import {
   broadcastWaitlistUpdate,
 } from './sse.js';
 import { saveWaitlistSubscription, notifyWaitlistStatus } from './push.js';
+import { notifyContact, validNotifyEmail, carrierById } from './email.js';
 
 export const waitlistRouter = Router();
 
@@ -53,6 +54,8 @@ interface EntryRow {
   queue_number: string;
   customer_name: string;
   customer_phone: string | null;
+  customer_email: string | null;
+  customer_carrier: string | null;
   party_size: number;
   special_requirements: string | null;
   status: string;
@@ -170,6 +173,8 @@ function adminEntryJson(e: EntryRow) {
     customer_name: e.customer_name,
     party_size: e.party_size,
     customer_phone: e.customer_phone,
+    customer_email: e.customer_email,
+    customer_carrier: e.customer_carrier,
     special_requirements: e.special_requirements,
     status: e.status,
     check_in_time: e.check_in_time,
@@ -277,6 +282,16 @@ function doTransition(
     updated.public_token,
     restaurantNameFor(updated.location_id)
   ).catch((e) => console.error('[waitlist] push notify failed', e?.message));
+  // Free channels: email + carrier-gateway SMS on CALLED.
+  if (newStatus === 'CALLED') {
+    const restaurant = restaurantNameFor(updated.location_id);
+    notifyContact(
+      { email: updated.customer_email, phone: updated.customer_phone, carrier: updated.customer_carrier },
+      `${restaurant}: Your table is ready!`,
+      `Hi${updated.customer_name ? ' ' + updated.customer_name : ''} — your table at ${restaurant} is ready! Please proceed to the host stand. (Queue number ${updated.queue_number})`,
+      `${restaurant}: Your table is ready! Queue number ${updated.queue_number} — please proceed to the host stand.`
+    ).catch((e) => console.error('[waitlist] email notify failed', e?.message));
+  }
   return updated;
 }
 
@@ -297,7 +312,7 @@ waitlistRouter.post('/check-in', (req, res) => {
     if (!rateLimited(`checkin:${clientIp(req)}`, 10, 10 * 60 * 1000)) {
       return res.status(429).json({ error: 'Too many check-ins. Please wait a few minutes and try again.' });
     }
-    const { slug, location_id, customer_name, party_size, customer_phone, special_requirements } = req.body ?? {};
+    const { slug, location_id, customer_name, party_size, customer_phone, customer_email, customer_carrier, special_requirements } = req.body ?? {};
     const loc = resolveLocation(slug, location_id);
 
     const name = String(customer_name || '').trim().slice(0, 120);
@@ -307,6 +322,8 @@ waitlistRouter.post('/check-in', (req, res) => {
       return res.status(400).json({ error: 'Party size must be between 1 and 30' });
     }
     const phone = String(customer_phone || '').trim().slice(0, 40) || null;
+    const email = validNotifyEmail(customer_email);
+    const carrier = carrierById(customer_carrier)?.id ?? null;
     const notes = String(special_requirements || '').trim().slice(0, 500) || null;
 
     // Duplicate protection: same phone + already waiting -> return the existing entry.
@@ -331,14 +348,16 @@ waitlistRouter.post('/check-in', (req, res) => {
     const insert = run(
       `INSERT INTO waitlist_entries
         (public_token, location_id, queue_seq, queue_number, customer_name, customer_phone,
-         party_size, special_requirements, status, check_in_time, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'WAITING', ?, ?, ?)`,
+         customer_email, customer_carrier, party_size, special_requirements, status, check_in_time, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'WAITING', ?, ?, ?)`,
       token,
       loc.id,
       seq,
       queueNumber,
       name,
       phone,
+      email,
+      carrier,
       partySize,
       notes,
       ts,
@@ -584,6 +603,13 @@ function staffAction(path: string, newStatus: string | null, eventType: string) 
           updated.public_token,
           restaurantNameFor(updated.location_id)
         ).catch((e) => console.error('[waitlist] push notify failed', e?.message));
+        // Free reminder on recall: email + carrier-gateway SMS.
+        notifyContact(
+          { email: updated.customer_email, phone: updated.customer_phone, carrier: updated.customer_carrier },
+          `${restaurantNameFor(updated.location_id)}: Reminder — your table is ready`,
+          `Hi${updated.customer_name ? ' ' + updated.customer_name : ''} — reminder: your table at ${restaurantNameFor(updated.location_id)} is ready. Please proceed to the host stand. (Queue number ${updated.queue_number})`,
+          `${restaurantNameFor(updated.location_id)}: Reminder — your table is ready! Queue number ${updated.queue_number}.`
+        ).catch((e) => console.error('[waitlist] email notify failed', e?.message));
         return res.json({
           id: updated.id,
           queue_number: updated.queue_number,

@@ -18,6 +18,7 @@ import {
 } from './sse.js';
 import { notifyOrderStatus } from './push.js';
 import { maybeSendReadySms } from './sms.js';
+import { notifyContact, validNotifyEmail, carrierById } from './email.js';
 import { applyCodeToLine, findCode, normalizeCode } from './discounts.js';
 import {
   createCheckoutSession,
@@ -52,6 +53,8 @@ interface OrderRow {
   order_number: number;
   customer_name: string | null;
   customer_phone: string | null;
+  customer_email: string | null;
+  customer_carrier: string | null;
   special_instructions: string | null;
   total_cents: number;
   discount_cents: number;
@@ -232,7 +235,7 @@ ordersRouter.post(
   '/',
   requireRole('ADMIN'),
   async (req: AuthRequest, res) => {
-    const { customer_name, customer_phone, special_instructions, counter_id, items } = req.body ?? {};
+    const { customer_name, customer_phone, customer_email, customer_carrier, special_instructions, counter_id, items } = req.body ?? {};
 
     let cleanItems: OrderItemClean[];
     try {
@@ -249,9 +252,9 @@ ordersRouter.post(
     const ts = now();
     const insert = run(
       `INSERT INTO orders (public_token, org_id, location_id, counter_id, order_number,
-        customer_name, customer_phone, special_instructions, total_cents, currency,
+        customer_name, customer_phone, customer_email, customer_carrier, special_instructions, total_cents, currency,
         payment_status, order_status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'usd', 'PENDING', 'PENDING_PAYMENT', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'usd', 'PENDING', 'PENDING_PAYMENT', ?, ?)`,
       token,
       req.user!.org_id,
       null,
@@ -259,6 +262,8 @@ ordersRouter.post(
       orderNumber,
       customer_name ? String(customer_name).slice(0, 120) : null,
       customer_phone ? String(customer_phone).slice(0, 40) : null,
+      validNotifyEmail(customer_email),
+      carrierById(customer_carrier)?.id ?? null,
       special_instructions ? String(special_instructions).slice(0, 500) : null,
       total,
       ts,
@@ -518,8 +523,21 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
     )?.name || '';
   if (status === 'READY') {
     maybeSendReadySms(updated.order_number, updated.customer_phone, restaurantName);
+    // Free channels: email + carrier-gateway SMS.
+    notifyContact(
+      { email: updated.customer_email, phone: updated.customer_phone, carrier: updated.customer_carrier },
+      `${restaurantName}: Order #${updated.order_number} is ready!`,
+      `Hi${updated.customer_name ? ' ' + updated.customer_name : ''} — your order #${updated.order_number} from ${restaurantName} is ready for pickup.`,
+      `${restaurantName}: Order #${updated.order_number} is ready for pickup!`
+    ).catch((e) => console.error('[orders] email notify failed', e?.message));
   } else if (status === 'PARTIALLY_COMPLETED') {
     maybeSendReadySms(updated.order_number, updated.customer_phone, restaurantName, true);
+    notifyContact(
+      { email: updated.customer_email, phone: updated.customer_phone, carrier: updated.customer_carrier },
+      `${restaurantName}: Part of order #${updated.order_number} is ready`,
+      `Hi${updated.customer_name ? ' ' + updated.customer_name : ''} — part of your order #${updated.order_number} from ${restaurantName} is ready for pickup. We'll let you know when the rest is done.`,
+      `${restaurantName}: Part of order #${updated.order_number} is ready for pickup!`
+    ).catch((e) => console.error('[orders] email notify failed', e?.message));
   }
   res.json({ id: updated.id, order_status: updated.order_status, updated_at: ts });
 });

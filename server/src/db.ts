@@ -25,6 +25,11 @@ function ensureColumn(table: string, column: string, ddl: string) {
 }
 ensureColumn('users', 'email', 'TEXT');
 ensureColumn('users', 'phone', 'TEXT');
+// Free notification contact info (email + carrier for gateway SMS).
+ensureColumn('orders', 'customer_email', 'TEXT');
+ensureColumn('orders', 'customer_carrier', 'TEXT');
+ensureColumn('waitlist_entries', 'customer_email', 'TEXT');
+ensureColumn('waitlist_entries', 'customer_carrier', 'TEXT');
 // One account per email address (case-insensitive). NULL emails (seeded demo
 // users) are not constrained — SQLite treats NULLs as distinct in unique indexes.
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email COLLATE NOCASE)');

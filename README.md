@@ -199,6 +199,7 @@ The default seeded workspace is named **Nankana's Kitchen**. API:
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | Real card payments (optional) |
 | `DEMO_PAYMENTS`       | `true` enables the test-only demo payment button     |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | SMS "order ready" texts (optional). When unset, no SMS is sent. |
+| `GMAIL_USER` / `GMAIL_APP_PASSWORD` | Free email notifications via Gmail SMTP + free carrier-gateway SMS (optional). When unset, no email/SMS is sent. Create the app password at myaccount.google.com/apppasswords (needs 2FA on). |
 
 ## Project structure
 

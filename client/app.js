@@ -818,6 +818,8 @@ function NewOrderPage() {
         <h2>Customer</h2>
         <label class="field"><span>Name (optional)</span><input id="cust-name" /></label>
         <label class="field"><span>Phone (optional)</span><input id="cust-phone" inputmode="tel" /></label>
+        <label class="field"><span>Email (optional)</span><input id="cust-email" type="email" autocomplete="email" placeholder="For free email updates" /></label>
+        <label class="field"><span>Mobile carrier (optional)</span><select id="cust-carrier">${carrierOptions('')}</select></label>
         <label class="field"><span>Special instructions</span><textarea id="cust-notes" rows="2" placeholder="e.g. less spicy"></textarea></label>
       </div>
 
@@ -894,9 +896,16 @@ function NewOrderPage() {
     const payload = {
       customer_name: document.getElementById('cust-name').value.trim() || undefined,
       customer_phone: document.getElementById('cust-phone').value.trim() || undefined,
+      customer_email: document.getElementById('cust-email').value.trim() || undefined,
+      customer_carrier: document.getElementById('cust-carrier').value || undefined,
       special_instructions: document.getElementById('cust-notes').value.trim() || undefined,
       items: list.map((i) => ({ name: i.name, qty: i.qty, unit_price: i.unit_price })),
     };
+    const em = document.getElementById('cust-email').value.trim();
+    if (em && !EMAIL_RE.test(em)) {
+      setError('Please enter a valid email address, or leave it blank.');
+      return;
+    }
     render();
     try {
       const created = await api('/api/orders', { method: 'POST', body: JSON.stringify(payload) });
@@ -2565,6 +2574,27 @@ const WL_STATUS_LABELS = {
   EXPIRED: 'Expired',
 };
 
+// US carriers for the free email-to-SMS gateway option (mirrors SMS_CARRIERS
+// in server/src/email.ts). Customer picks theirs to get text updates free.
+const SMS_CARRIERS = [
+  ['verizon', 'Verizon'],
+  ['tmobile', 'T-Mobile'],
+  ['att', 'AT&T'],
+  ['googlefi', 'Google Fi'],
+  ['uscellular', 'US Cellular'],
+  ['cricket', 'Cricket'],
+  ['boost', 'Boost Mobile'],
+  ['mint', 'Mint Mobile'],
+  ['metro', 'Metro by T-Mobile'],
+];
+function carrierOptions(selected) {
+  return (
+    `<option value="">No text updates</option>` +
+    SMS_CARRIERS.map(([id, label]) => `<option value="${id}"${selected === id ? ' selected' : ''}>${label}</option>`).join('')
+  );
+}
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
 // Buttons shown per entry status on the staff dashboard. Only sensible
 // transitions are offered (the backend also enforces them with 409s).
 // Staff waitlist: each entry gets exactly ONE primary action — the natural next
@@ -2672,9 +2702,16 @@ function CheckinPage({ slug }) {
     const name = document.getElementById('wl-name').value.trim();
     const size = Number(document.getElementById('wl-size').value);
     const phone = document.getElementById('wl-phone').value.trim();
+    const email = document.getElementById('wl-email').value.trim();
+    const carrier = document.getElementById('wl-carrier').value;
     const notes = document.getElementById('wl-notes').value.trim();
     if (!name) {
       formError = 'Please enter your name.';
+      render();
+      return;
+    }
+    if (email && !EMAIL_RE.test(email)) {
+      formError = 'Please enter a valid email address, or leave it blank.';
       render();
       return;
     }
@@ -2694,6 +2731,8 @@ function CheckinPage({ slug }) {
           customer_name: name,
           party_size: size,
           ...(phone ? { customer_phone: phone } : {}),
+          ...(email ? { customer_email: email } : {}),
+          ...(carrier ? { customer_carrier: carrier } : {}),
           ...(notes ? { special_requirements: notes } : {}),
         }),
       });
@@ -2759,6 +2798,8 @@ function CheckinPage({ slug }) {
           <label class="field"><span>Name</span><input id="wl-name" autocomplete="name" maxlength="120" /></label>
           <label class="field"><span>Number of guests</span><input id="wl-size" type="number" min="1" max="30" inputmode="numeric" value="2" /></label>
           <label class="field"><span>Phone number (optional)</span><input id="wl-phone" inputmode="tel" placeholder="So we can find your entry if needed" /></label>
+          <label class="field"><span>Email (optional)</span><input id="wl-email" type="email" autocomplete="email" placeholder="For free email updates" /></label>
+          <label class="field"><span>Mobile carrier (optional)</span><select id="wl-carrier">${carrierOptions('')}</select></label>
           <label class="field"><span>Special requirements (optional)</span><textarea id="wl-notes" rows="2" placeholder="High chair, wheelchair access, indoor/outdoor…"></textarea></label>
           <button class="btn block" type="submit" ${busy ? 'disabled' : ''}>${
       busy ? 'Checking in…' : 'CHECK IN'

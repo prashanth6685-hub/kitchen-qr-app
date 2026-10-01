@@ -2,6 +2,7 @@ import Stripe from 'stripe';
 import { row, run, now } from './db.js';
 import { broadcastOrderUpdate } from './sse.js';
 import { notifyOrderStatus } from './push.js';
+import { sendEmail } from './email.js';
 
 const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || '';
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
@@ -26,6 +27,7 @@ export interface OrderRow {
   id: number;
   public_token: string;
   order_number: number;
+  customer_email: string | null;
   total_cents: number;
   currency: string;
   payment_status: string;
@@ -94,6 +96,20 @@ export function markOrderPaid(orderId: number, provider: string, providerReferen
   notifyOrderStatus(orderId, updated.order_number, 'PAID', updated.public_token).catch((e) =>
     console.error('[payments] push notify failed', e)
   );
+  // Free payment-confirmation email (order updates).
+  if (updated.customer_email) {
+    const restaurant =
+      row<{ name: string }>(
+        'SELECT org.name AS name FROM organizations org JOIN orders o ON o.org_id = org.id WHERE o.id = ?',
+        orderId
+      )?.name || '';
+    const amount = (updated.total_cents / 100).toFixed(2);
+    sendEmail(
+      updated.customer_email,
+      `${restaurant}: Payment confirmed for order #${updated.order_number}`,
+      `Hi — your payment of $${amount} for order #${updated.order_number} from ${restaurant} is confirmed. We'll notify you when it's ready.`
+    ).catch((e) => console.error('[payments] email notify failed', e?.message));
+  }
   console.log(`[payments] order #${updated.order_number} marked PAID via ${provider}`);
   return orderPublicShape(updated);
 }

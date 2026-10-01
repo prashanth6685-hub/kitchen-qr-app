@@ -396,6 +396,48 @@ check("cancel a called entry", s == 200 and d["status"] == "CANCELLED", f"got {s
 s, d = req("GET", f"/api/waitlist/token/{wl_pub}")
 check("cancelled entry keeps recall history publicly", s == 200 and d["status"] == "CANCELLED" and d["recall_count"] == 3 and bool(d["called_time"]), f"got {s}")
 
+print("== free notifications: email + gateway sms ==")
+import subprocess as _sp
+_unit_ts = "/tmp/qa_email_unit.ts"
+open(_unit_ts, "w").write('''
+import assert from "node:assert";
+import { gatewayAddress, carrierById, smsDigits, validNotifyEmail, emailEnabled, sendEmail, notifyContact, SMS_CARRIERS } from "/home/hatch/workspace/kitchen-qr-main/server/src/email.js";
+assert.strictEqual(gatewayAddress("2125551234", "verizon"), "2125551234@vtext.com");
+assert.strictEqual(gatewayAddress("+1 (212) 555-1234", "tmobile"), "2125551234@tmomail.net");
+assert.strictEqual(gatewayAddress("2125551234", "nosuch"), null);
+assert.strictEqual(gatewayAddress("123", "verizon"), null);
+assert.strictEqual(gatewayAddress("2125551234", ""), null);
+assert.strictEqual(carrierById("ATT").domain, "txt.att.net");
+assert.strictEqual(carrierById("bogus"), null);
+assert.strictEqual(smsDigits("+1-212-555-1234"), "2125551234");
+assert.strictEqual(smsDigits("2125551234"), "2125551234");
+assert.strictEqual(smsDigits("12345"), null);
+assert.strictEqual(validNotifyEmail("  A@B.co "), "a@b.co");
+assert.strictEqual(validNotifyEmail("nope"), null);
+assert.strictEqual(validNotifyEmail(""), null);
+assert.strictEqual(emailEnabled, false);
+assert.ok(SMS_CARRIERS.length >= 9);
+async function main() {
+  assert.strictEqual(await sendEmail("a@b.co", "s", "t"), false);
+  await notifyContact({ email: "a@b.co" }, "s", "body", "sms"); // no-op, must not throw
+  console.log("email unit ok");
+}
+main();
+''')
+_unit = _sp.run(["npx", "tsx", _unit_ts], capture_output=True, text=True, cwd="/home/hatch/workspace/kitchen-qr-main/server")
+check("email/gateway module unit checks", _unit.returncode == 0, (_unit.stdout + _unit.stderr)[-400:])
+s, d = req("POST", "/api/waitlist/check-in", body={"location_id": wl_loc["id"], "customer_name": "Notify Test", "party_size": 2, "customer_phone": "2125551234", "customer_email": "Guest@Example.COM", "customer_carrier": "verizon"})
+check("check-in accepts email+carrier", s == 201, f"got {s} {d}")
+qn3 = d["queue_number"]
+s, d = req("GET", f"/api/waitlist/admin/summary?location_id={wl_loc['id']}", token=counter_tok)
+ent3 = next(e for e in d["entries"] if e["queue_number"] == qn3)
+check("waitlist stores normalized email + carrier", ent3["customer_email"] == "guest@example.com" and ent3["customer_carrier"] == "verizon", f"got {ent3.get('customer_email')} {ent3.get('customer_carrier')}")
+s, d = req("POST", "/api/orders", token=counter_tok, body={"items": [{"name": "Samosa", "qty": 1, "unit_price": 199}], "customer_email": "buyer@example.com", "customer_carrier": "tmobile", "customer_phone": "3105551234"})
+check("order create accepts email+carrier", s == 201, f"got {s} {d}")
+oid3 = d["id"]
+s, d = req("GET", f"/api/orders/{oid3}", token=counter_tok)
+check("order stores email+carrier", s == 200 and d["customer_email"] == "buyer@example.com" and d["customer_carrier"] == "tmobile", f"got {s}")
+
 print("== waitlist client checks (static) ==")
 import os as _os
 _client = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "client", "app.js")
@@ -412,6 +454,8 @@ check("CALLED rows have CALL AGAIN button", 'data-act="recall"' in _src and "CAL
 check("customer texts don't promise almost-ready push", "your table is almost ready" not in _src.lower())
 check("customer timeline has no almost-ready step", "Almost your turn', 'Called'" not in _src)
 check("customer page shows recall count", "Reminder ${e.recall_count}" in _src and "you were reminded ${rc}" in _src)
+check("check-in has email + carrier fields", 'id="wl-email"' in _src and 'id="wl-carrier"' in _src)
+check("new order has email + carrier fields", 'id="cust-email"' in _src and 'id="cust-carrier"' in _src)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
