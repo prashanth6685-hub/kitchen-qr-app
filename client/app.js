@@ -403,7 +403,7 @@ function LoginPage() {
         <label class="field">
           <span>Username</span>
           <input id="su-user" autocomplete="username" placeholder="e.g. priya99" />
-          <span class="hint" id="su-user-hint">Min 5 characters, or 4 characters with a number.</span>
+          <span class="hint" id="su-user-hint">Min 5 characters (letters, numbers, . _ -).</span>
         </label>
         <label class="field">
           <span>Password</span>
@@ -454,18 +454,17 @@ function LoginPage() {
     gotoSignup.style.display = 'block';
   });
 
-  // Username rule: at least 5 characters, or 4 characters including a number.
-  const USER_RE = /^[a-zA-Z0-9._-]{4,32}$/;
+  // Username rule: at least 5 characters.
+  const USER_RE = /^[a-zA-Z0-9._-]{5,32}$/;
   const usernameProblem = (u) => {
-    if (!USER_RE.test(u)) return 'Username must be 4–32 characters (letters, numbers, . _ -).';
-    if (u.length < 5 && !/\d/.test(u)) return 'Min 5 characters, or 4 characters with a number.';
+    if (!USER_RE.test(u)) return 'Username must be 5–32 characters (letters, numbers, . _ -).';
     return null;
   };
 
   // Live availability check under the signup username field.
   const suUser = document.getElementById('su-user');
   const suHint = document.getElementById('su-user-hint');
-  const HINT_DEFAULT = 'Min 5 characters, or 4 characters with a number.';
+  const HINT_DEFAULT = 'Min 5 characters (letters, numbers, . _ -).';
   let availTimer = null;
   const setHint = (msg, ok) => {
     suHint.textContent = msg;
@@ -559,7 +558,7 @@ function LoginPage() {
     const prob = usernameProblem(username);
     if (prob) return showErr(prob);
     if (password.length < 6) return showErr('Password must be at least 6 characters.');
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showErr('Please enter a valid email address.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return showErr('Please enter a valid email address.');
     if (phone && !/^[+()\-.\s\d]{7,25}$/.test(phone)) return showErr('Please enter a valid phone number.');
     if (!restaurantName) return showErr('Please enter your restaurant or company name.');
     signupBtn.disabled = true;

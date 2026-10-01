@@ -18,6 +18,7 @@ import { waitlistRouter } from './waitlist.js';
 import { discountsRouter } from './discounts.js';
 import { handleStripeWebhook, stripeConfigured } from './payments.js';
 import { saveSubscription, getVapidPublicKey, pushEnabled } from './push.js';
+import { EMAIL_RE, emailDomainReceivesMail } from './emailValidation.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -78,19 +79,15 @@ app.post('/api/auth/login', (req, res) => {
 // and counters, plus an ADMIN account that gets full functionality.
 // Username rule: at least 5 characters, or 4 characters including a number.
 // Email is required and unique (one account per email); phone is optional.
-const USERNAME_RE = /^[a-zA-Z0-9._-]{4,32}$/;
+const USERNAME_RE = /^[a-zA-Z0-9._-]{5,32}$/;
 function usernameProblem(username: string): string | null {
   if (!USERNAME_RE.test(username)) {
-    return 'Username must be 4–32 characters (letters, numbers, . _ -).';
-  }
-  if (username.length < 5 && !/\d/.test(username)) {
-    return 'Username needs at least 5 characters, or 4 characters including a number.';
+    return 'Username must be 5–32 characters (letters, numbers, . _ -).';
   }
   return null;
 }
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^[+()\-.\s\d]{7,25}$/;
-app.post('/api/auth/signup', (req, res) => {
+app.post('/api/auth/signup', async (req, res) => {
   const username = String(req.body?.username ?? '').trim();
   const password = String(req.body?.password ?? '');
   const email = String(req.body?.email ?? '').trim().toLowerCase();
@@ -103,6 +100,14 @@ app.post('/api/auth/signup', (req, res) => {
   }
   if (!EMAIL_RE.test(email)) {
     return res.status(400).json({ error: 'Please enter a valid email address.' });
+  }
+  // Stronger check: the domain must actually be able to receive email
+  // (MX record, or A/AAAA fallback). Fails open when DNS can't be checked.
+  const mailOk = await emailDomainReceivesMail(email.split('@')[1] || '');
+  if (mailOk === false) {
+    return res
+      .status(400)
+      .json({ error: "That email domain doesn't appear to accept email. Please check the address and try again." });
   }
   if (phone && !PHONE_RE.test(phone)) {
     return res.status(400).json({ error: 'Please enter a valid phone number.' });
