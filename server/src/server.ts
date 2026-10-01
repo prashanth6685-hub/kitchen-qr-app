@@ -52,7 +52,7 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(400).json({ error: 'Username and password required' });
   }
   const user = row<StaffUser & { password_hash: string }>(
-    `SELECT u.id, u.username, u.role, u.org_id, o.name AS org_name, u.password_hash
+    `SELECT u.id, u.username, u.role, u.org_id, o.name AS org_name, u.password_hash, u.email, u.phone
      FROM users u LEFT JOIN organizations o ON o.id = u.org_id WHERE u.username = ? COLLATE NOCASE`,
     String(username)
   );
@@ -65,32 +65,56 @@ app.post('/api/auth/login', (req, res) => {
     role: user.role,
     org_id: user.org_id,
     org_name: user.org_name,
+    email: user.email,
+    phone: user.phone,
   });
   res.json({
     token,
-    user: { id: user.id, username: user.username, role: user.role, restaurant_name: user.org_name },
+    user: { id: user.id, username: user.username, role: user.role, restaurant_name: user.org_name, email: user.email, phone: user.phone },
   });
 });
 
 // Public signup: creates a restaurant (organization) with a default location
 // and counters, plus an ADMIN account that gets full functionality.
+// Username rule: at least 5 characters, or 4 characters including a number.
+// Email is required and unique (one account per email); phone is optional.
+const USERNAME_RE = /^[a-zA-Z0-9._-]{4,32}$/;
+function usernameProblem(username: string): string | null {
+  if (!USERNAME_RE.test(username)) {
+    return 'Username must be 4–32 characters (letters, numbers, . _ -).';
+  }
+  if (username.length < 5 && !/\d/.test(username)) {
+    return 'Username needs at least 5 characters, or 4 characters including a number.';
+  }
+  return null;
+}
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE = /^[+()\-.\s\d]{7,25}$/;
 app.post('/api/auth/signup', (req, res) => {
   const username = String(req.body?.username ?? '').trim();
   const password = String(req.body?.password ?? '');
+  const email = String(req.body?.email ?? '').trim().toLowerCase();
+  const phone = String(req.body?.phone ?? '').trim();
   const restaurantName = String(req.body?.restaurant_name ?? '').trim().slice(0, 80);
-  if (!/^[a-zA-Z0-9._-]{3,32}$/.test(username)) {
-    return res.status(400).json({
-      error: 'Username must be 3–32 characters (letters, numbers, . _ -).',
-    });
-  }
+  const badName = usernameProblem(username);
+  if (badName) return res.status(400).json({ error: badName });
   if (password.length < 6) {
     return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+  }
+  if (!EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: 'Please enter a valid email address.' });
+  }
+  if (phone && !PHONE_RE.test(phone)) {
+    return res.status(400).json({ error: 'Please enter a valid phone number.' });
   }
   if (!restaurantName) {
     return res.status(400).json({ error: 'Please enter your restaurant or company name.' });
   }
   if (row('SELECT id FROM users WHERE username = ? COLLATE NOCASE', username)) {
     return res.status(409).json({ error: 'That username is already taken.' });
+  }
+  if (row('SELECT id FROM users WHERE email = ? COLLATE NOCASE', email)) {
+    return res.status(409).json({ error: 'An account with that email already exists.' });
   }
   const org = run('INSERT INTO organizations (name) VALUES (?)', restaurantName);
   const orgId = Number(org.lastInsertRowid);
@@ -99,7 +123,10 @@ app.post('/api/auth/signup', (req, res) => {
   for (const name of ['Counter 1', 'Counter 2', 'Counter 3']) {
     run('INSERT INTO counters (location_id, name) VALUES (?, ?)', locId, name);
   }
-  const u = run('INSERT INTO users (username, password_hash, role, org_id) VALUES (?, ?, ?, ?)', username, hashPassword(password), 'ADMIN', orgId);
+  const u = run(
+    'INSERT INTO users (username, password_hash, role, org_id, email, phone) VALUES (?, ?, ?, ?, ?, ?)',
+    username, hashPassword(password), 'ADMIN', orgId, email, phone || null
+  );
   const userId = Number(u.lastInsertRowid);
   const token = signToken({
     id: userId,
@@ -107,10 +134,26 @@ app.post('/api/auth/signup', (req, res) => {
     role: 'ADMIN',
     org_id: orgId,
     org_name: restaurantName,
+    email,
+    phone: phone || null,
   });
   res.status(201).json({
     token,
-    user: { id: userId, username, role: 'ADMIN', restaurant_name: restaurantName },
+    user: { id: userId, username, role: 'ADMIN', restaurant_name: restaurantName, email, phone: phone || null },
+  });
+});
+
+// Public: live username-availability check for the signup form (case-insensitive).
+app.get('/api/auth/username-available', (req, res) => {
+  const username = String(req.query.username ?? '').trim();
+  const badName = usernameProblem(username);
+  if (badName) {
+    return res.json({ available: false, message: badName });
+  }
+  const taken = !!row('SELECT id FROM users WHERE username = ? COLLATE NOCASE', username);
+  res.json({
+    available: !taken,
+    message: taken ? 'That username is already taken.' : 'Username available ✓',
   });
 });
 
@@ -127,6 +170,8 @@ app.get('/api/auth/me', requireAuth, (req: AuthRequest, res) => {
       username: req.user!.username,
       role: req.user!.role,
       restaurant_name: req.user!.org_name,
+      email: req.user!.email,
+      phone: req.user!.phone,
     },
   });
 });

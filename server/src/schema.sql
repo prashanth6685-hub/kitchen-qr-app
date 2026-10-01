@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('ADMIN','KITCHEN_STAFF')),
   org_id INTEGER REFERENCES organizations(id),
+  email TEXT,
+  phone TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

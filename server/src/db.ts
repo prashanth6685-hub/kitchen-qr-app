@@ -23,6 +23,11 @@ function ensureColumn(table: string, column: string, ddl: string) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
   }
 }
+ensureColumn('users', 'email', 'TEXT');
+ensureColumn('users', 'phone', 'TEXT');
+// One account per email address (case-insensitive). NULL emails (seeded demo
+// users) are not constrained — SQLite treats NULLs as distinct in unique indexes.
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email COLLATE NOCASE)');
 ensureColumn('locations', 'slug', 'TEXT');
 ensureColumn('locations', 'waitlist_prefix', "TEXT NOT NULL DEFAULT 'A'");
 ensureColumn('locations', 'avg_party_minutes', 'INTEGER NOT NULL DEFAULT 5');

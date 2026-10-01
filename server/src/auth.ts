@@ -11,6 +11,8 @@ export interface StaffUser {
   role: Role;
   org_id: number | null;
   org_name: string | null;
+  email: string | null;
+  phone: string | null;
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -46,7 +48,7 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
   try {
     const payload = jwt.verify(token, JWT_SECRET) as any;
     const user = row<StaffUser>(
-      `SELECT u.id, u.username, u.role, u.org_id, o.name AS org_name
+      `SELECT u.id, u.username, u.role, u.org_id, o.name AS org_name, u.email, u.phone
        FROM users u LEFT JOIN organizations o ON o.id = u.org_id WHERE u.id = ?`,
       payload.sub
     );

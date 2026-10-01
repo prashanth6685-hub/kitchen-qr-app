@@ -126,32 +126,42 @@ is plain HTML/CSS/JS — no frontend build step, no bundler required).
 | Username  | Password    | Role          |
 |-----------|-------------|---------------|
 | admin     | admin123    | ADMIN         |
-| counter   | counter123  | COUNTER_STAFF |
 | kitchen   | kitchen123  | KITCHEN_STAFF |
 
-Change these in production. Admins do everything; counter staff create orders
-and take payments; kitchen staff move orders through
+Change these in production. Admins do everything (they can also switch to the
+kitchen view); kitchen staff move orders through
 RECEIVED → PREPARING → READY → COMPLETED.
 
 ## User accounts & restaurant names
 
 New users can **create their own account** from the login page ("Create an
-account"). Signup asks for a username, a password, and a **restaurant / company
+account"). Signup asks for a username, a password, an **email address** (one
+account per email), an optional phone number, and a **restaurant / company
 name**. Every signup creates its own isolated restaurant workspace (menu,
 orders, discount codes, waitlist) with the new user as ADMIN — all
 functionality is available to them, and their data is never mixed with other
 accounts.
 
+Username rules: at least 5 characters, or 4 characters including a number
+(letters, numbers, `.` `_` `-`). Sign-in is case-insensitive
+(`Admin` = `admin`). The signup form shows live username availability as you
+type.
+
 The restaurant name is shown:
-- above the login form and in the staff topbar / user menu,
+- in the staff topbar / user menu (after login),
 - on the customer order-tracking page,
 - above the payment-confirmed QR code on the order page,
 - prefixed to order-ready SMS texts and push notifications
   (e.g. "Nankana's Kitchen: Order Ready 🎉").
 
+The staff login page itself is always branded "Staff Login / Kitchen Orders" —
+it never shows a restaurant name. Demo credentials are documented in this
+README only and are intentionally **not** shown on the login page.
+
 The default seeded workspace is named **Nankana's Kitchen**. API:
-- `POST /api/auth/signup` → `{ username, password, restaurant_name }` → `201` + `{ token, user }` (auto-logged-in as ADMIN)
-- `GET /api/public/restaurant-name` → `{ name }` (public, for the login screen)
+- `POST /api/auth/signup` → `{ username, password, email, phone?, restaurant_name }` → `201` + `{ token, user }` (auto-logged-in as ADMIN); `409` on duplicate username/email
+- `GET /api/auth/username-available?username=…` → `{ available, message }` (public, for the live signup hint)
+- `GET /api/public/restaurant-name` → `{ name }` (public)
 
 ## The flow
 

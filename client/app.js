@@ -369,8 +369,8 @@ function LoginPage() {
     </div>
     <div class="login-panel">
       <div class="login-logo">🍽️</div>
-      <h1 id="login-brand">Kitchen Orders</h1>
-      <p class="sub">Staff sign in — admins take orders, kitchen fires them up.</p>
+      <h1>Staff Login</h1>
+      <p class="sub">Kitchen Orders — sign in to take orders, run the kitchen board &amp; the waitlist.</p>
       <div class="error" id="login-error" style="display:none"></div>
       <form id="login-form">
         <label class="field">
@@ -387,11 +387,20 @@ function LoginPage() {
       <form id="signup-form" style="display:none">
         <label class="field">
           <span>Username</span>
-          <input id="su-user" autocomplete="username" placeholder="e.g. priya" />
+          <input id="su-user" autocomplete="username" placeholder="e.g. priya99" />
+          <span class="hint" id="su-user-hint">Min 5 characters, or 4 characters with a number.</span>
         </label>
         <label class="field">
           <span>Password</span>
           <input id="su-pass" type="password" autocomplete="new-password" placeholder="••••••••" />
+        </label>
+        <label class="field">
+          <span>Email</span>
+          <input id="su-email" type="email" autocomplete="email" placeholder="you@example.com" />
+        </label>
+        <label class="field">
+          <span>Phone <em style="font-weight:400">(optional)</em></span>
+          <input id="su-phone" type="tel" autocomplete="tel" placeholder="+1 555 123 4567" />
         </label>
         <label class="field">
           <span>Restaurant / company name</span>
@@ -400,23 +409,9 @@ function LoginPage() {
         <button class="btn block" id="signup-btn" type="submit">Create account</button>
         <p class="sub" style="text-align:center">Already have an account? <a class="link" href="#" id="show-login">Log in</a></p>
       </form>
-      <div class="login-accounts">
-        <b>Demo accounts</b><br>
-        Admin &mdash; <b>admin / admin123</b> (takes orders, manages everything)<br>
-        Kitchen &mdash; <b>kitchen / kitchen123</b> (prepares &amp; marks ready)
-      </div>
       <p class="sub" style="text-align:center;margin-top:18px"><a class="link" href="/">← Back to home</a></p>
     </div>
   </div>`;
-
-  // Show the restaurant name above the login form.
-  fetch('/api/public/restaurant-name')
-    .then((r) => r.json())
-    .then((d) => {
-      const h1 = document.getElementById('login-brand');
-      if (h1 && d && d.name) h1.textContent = d.name;
-    })
-    .catch(() => {});
 
   const loginForm = document.getElementById('login-form');
   const signupForm = document.getElementById('signup-form');
@@ -442,6 +437,47 @@ function LoginPage() {
     signupForm.style.display = 'none';
     loginForm.style.display = 'block';
     gotoSignup.style.display = 'block';
+  });
+
+  // Username rule: at least 5 characters, or 4 characters including a number.
+  const USER_RE = /^[a-zA-Z0-9._-]{4,32}$/;
+  const usernameProblem = (u) => {
+    if (!USER_RE.test(u)) return 'Username must be 4–32 characters (letters, numbers, . _ -).';
+    if (u.length < 5 && !/\d/.test(u)) return 'Min 5 characters, or 4 characters with a number.';
+    return null;
+  };
+
+  // Live availability check under the signup username field.
+  const suUser = document.getElementById('su-user');
+  const suHint = document.getElementById('su-user-hint');
+  const HINT_DEFAULT = 'Min 5 characters, or 4 characters with a number.';
+  let availTimer = null;
+  const setHint = (msg, ok) => {
+    suHint.textContent = msg;
+    suHint.style.color = ok === true ? '#1a7f37' : ok === false ? '#c0392b' : '';
+  };
+  suUser.addEventListener('input', () => {
+    clearTimeout(availTimer);
+    const u = suUser.value.trim();
+    if (!u) {
+      setHint(HINT_DEFAULT, null);
+      return;
+    }
+    const prob = usernameProblem(u);
+    if (prob) {
+      setHint(prob, false);
+      return;
+    }
+    setHint('Checking availability…', null);
+    availTimer = setTimeout(async () => {
+      try {
+        const r = await fetch('/api/auth/username-available?username=' + encodeURIComponent(u));
+        const d = await r.json();
+        if (suUser.value.trim() === u) setHint(d.message, d.available);
+      } catch {
+        if (suUser.value.trim() === u) setHint('Could not check availability.', null);
+      }
+    }, 400);
   });
 
   const loginBtn = document.getElementById('login-btn');
@@ -470,17 +506,24 @@ function LoginPage() {
   const signupBtn = document.getElementById('signup-btn');
   signupForm.addEventListener('submit', async (e) => {
     e.preventDefault();
+    hideErr();
+    const username = document.getElementById('su-user').value.trim();
+    const password = document.getElementById('su-pass').value;
+    const email = document.getElementById('su-email').value.trim();
+    const phone = document.getElementById('su-phone').value.trim();
+    const restaurantName = document.getElementById('su-restaurant').value.trim();
+    const prob = usernameProblem(username);
+    if (prob) return showErr(prob);
+    if (password.length < 6) return showErr('Password must be at least 6 characters.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showErr('Please enter a valid email address.');
+    if (phone && !/^[+()\-.\s\d]{7,25}$/.test(phone)) return showErr('Please enter a valid phone number.');
+    if (!restaurantName) return showErr('Please enter your restaurant or company name.');
     signupBtn.disabled = true;
     signupBtn.innerHTML = '<span class="spinner"></span> Creating account…';
-    hideErr();
     try {
       const data = await api('/api/auth/signup', {
         method: 'POST',
-        body: JSON.stringify({
-          username: document.getElementById('su-user').value.trim(),
-          password: document.getElementById('su-pass').value,
-          restaurant_name: document.getElementById('su-restaurant').value.trim(),
-        }),
+        body: JSON.stringify({ username, password, email, phone, restaurant_name: restaurantName }),
       });
       saveSession(data.token, data.user);
       go('/staff');
