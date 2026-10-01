@@ -9,3 +9,13 @@ services:
         value: "true"
       # PUBLIC_BASE_URL auto-falls back to RENDER_EXTERNAL_URL in the Dockerfile.
       # Set it explicitly here only if you use a custom domain.
+      # --- Turso database (free, keeps your data across restarts) ---
+      # Render's free plan wipes the local filesystem on every restart, so the
+      # built-in SQLite file loses all data. Point the app at a free Turso
+      # database instead: create one at https://turso.tech, then add the two
+      # variables below in the Render dashboard (Environment tab) — do NOT
+      # commit the auth token to this file.
+      # - key: TURSO_DATABASE_URL
+      #   sync: false
+      # - key: TURSO_AUTH_TOKEN
+      #   sync: false
