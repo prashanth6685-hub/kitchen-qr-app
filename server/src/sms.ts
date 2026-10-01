@@ -41,13 +41,15 @@ export async function sendSms(to: string, body: string): Promise<void> {
 export function maybeSendReadySms(
   orderNumber: number,
   customerPhone: string | null,
+  restaurantName = '',
   partial = false
 ): void {
   if (!smsConfigured) return;
   const to = normalizePhone(customerPhone);
   if (!to) return;
+  const prefix = restaurantName ? `${restaurantName}: ` : '';
   const body = partial
-    ? `Part of your order #${orderNumber} is ready for pickup!`
-    : `Your order #${orderNumber} is ready for pickup!`;
+    ? `${prefix}Part of your order #${orderNumber} is ready for pickup!`
+    : `${prefix}Your order #${orderNumber} is ready for pickup!`;
   sendSms(to, body).catch((e) => console.error('[sms] send failed', e.message));
 }

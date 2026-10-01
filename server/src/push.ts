@@ -90,10 +90,15 @@ export async function notifyOrderStatus(
   if (!pushEnabled) return;
   const msg = STATUS_MESSAGES[newStatus];
   if (!msg) return;
+  const orgRow = row<{ name: string }>(
+    'SELECT org.name AS name FROM organizations org JOIN orders o ON o.org_id = org.id WHERE o.id = ?',
+    orderId
+  );
+  const restaurant = orgRow?.name || '';
   const baseUrl = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
   const subs = subscriptionsForOrder(orderId);
   const payload = JSON.stringify({
-    title: msg.title,
+    title: restaurant ? `${restaurant}: ${msg.title}` : msg.title,
     body: msg.body(orderNumber),
     url: `${baseUrl}/order/${publicToken}`,
     tag: `order-${orderId}`,

@@ -10,6 +10,7 @@ export interface StaffUser {
   username: string;
   role: Role;
   org_id: number | null;
+  org_name: string | null;
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -45,7 +46,8 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
   try {
     const payload = jwt.verify(token, JWT_SECRET) as any;
     const user = row<StaffUser>(
-      'SELECT id, username, role, org_id FROM users WHERE id = ?',
+      `SELECT u.id, u.username, u.role, u.org_id, o.name AS org_name
+       FROM users u LEFT JOIN organizations o ON o.id = u.org_id WHERE u.id = ?`,
       payload.sub
     );
     if (!user) return res.status(401).json({ error: 'Invalid session' });

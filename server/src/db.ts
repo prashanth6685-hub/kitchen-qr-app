@@ -41,6 +41,8 @@ db.exec(`
   )
   WHERE order_status = 'COMPLETED' AND completed_at IS NULL
 `);
+// --- Migration: the seeded demo organization is the owner's restaurant.
+db.exec(`UPDATE organizations SET name = 'Nankana''s Kitchen' WHERE name = 'Your Kitchen'`);
 // --- Migration: allow the PARTIALLY_COMPLETED order status.
 // SQLite cannot alter a CHECK constraint, so rebuild the orders table once
 // (data-preserving: copy into a new table, drop the old one, rename).

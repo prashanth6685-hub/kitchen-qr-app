@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { row, all, run } from './db.js';
 import {
   verifyPassword,
+  hashPassword,
   signToken,
   requireAuth,
   requireRole,
@@ -51,21 +52,83 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(400).json({ error: 'Username and password required' });
   }
   const user = row<StaffUser & { password_hash: string }>(
-    'SELECT id, username, role, org_id, password_hash FROM users WHERE username = ?',
+    `SELECT u.id, u.username, u.role, u.org_id, o.name AS org_name, u.password_hash
+     FROM users u LEFT JOIN organizations o ON o.id = u.org_id WHERE u.username = ?`,
     String(username)
   );
   if (!user || !verifyPassword(String(password), user.password_hash)) {
     return res.status(401).json({ error: 'Invalid username or password' });
   }
-  const token = signToken({ id: user.id, username: user.username, role: user.role, org_id: user.org_id });
+  const token = signToken({
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    org_id: user.org_id,
+    org_name: user.org_name,
+  });
   res.json({
     token,
-    user: { id: user.id, username: user.username, role: user.role },
+    user: { id: user.id, username: user.username, role: user.role, restaurant_name: user.org_name },
   });
 });
 
+// Public signup: creates a restaurant (organization) with a default location
+// and counters, plus an ADMIN account that gets full functionality.
+app.post('/api/auth/signup', (req, res) => {
+  const username = String(req.body?.username ?? '').trim();
+  const password = String(req.body?.password ?? '');
+  const restaurantName = String(req.body?.restaurant_name ?? '').trim().slice(0, 80);
+  if (!/^[a-zA-Z0-9._-]{3,32}$/.test(username)) {
+    return res.status(400).json({
+      error: 'Username must be 3–32 characters (letters, numbers, . _ -).',
+    });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+  }
+  if (!restaurantName) {
+    return res.status(400).json({ error: 'Please enter your restaurant or company name.' });
+  }
+  if (row('SELECT id FROM users WHERE username = ?', username)) {
+    return res.status(409).json({ error: 'That username is already taken.' });
+  }
+  const org = run('INSERT INTO organizations (name) VALUES (?)', restaurantName);
+  const orgId = Number(org.lastInsertRowid);
+  const loc = run('INSERT INTO locations (org_id, name) VALUES (?, ?)', orgId, 'Main Location');
+  const locId = Number(loc.lastInsertRowid);
+  for (const name of ['Counter 1', 'Counter 2', 'Counter 3']) {
+    run('INSERT INTO counters (location_id, name) VALUES (?, ?)', locId, name);
+  }
+  const u = run('INSERT INTO users (username, password_hash, role, org_id) VALUES (?, ?, ?, ?)', username, hashPassword(password), 'ADMIN', orgId);
+  const userId = Number(u.lastInsertRowid);
+  const token = signToken({
+    id: userId,
+    username,
+    role: 'ADMIN',
+    org_id: orgId,
+    org_name: restaurantName,
+  });
+  res.status(201).json({
+    token,
+    user: { id: userId, username, role: 'ADMIN', restaurant_name: restaurantName },
+  });
+});
+
+// Public: the deployment's restaurant name, shown on the login page.
+app.get('/api/public/restaurant-name', (_req, res) => {
+  const org = row<{ name: string }>('SELECT name FROM organizations ORDER BY id LIMIT 1');
+  res.json({ name: org?.name || 'Kitchen Orders' });
+});
+
 app.get('/api/auth/me', requireAuth, (req: AuthRequest, res) => {
-  res.json({ user: { id: req.user!.id, username: req.user!.username, role: req.user!.role } });
+  res.json({
+    user: {
+      id: req.user!.id,
+      username: req.user!.username,
+      role: req.user!.role,
+      restaurant_name: req.user!.org_name,
+    },
+  });
 });
 
 // ---------- Notifications ----------

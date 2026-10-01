@@ -186,7 +186,11 @@ function defaultCounterId(): number | null {
 // ---------- Public customer endpoints (secure token, no login) ----------
 
 ordersRouter.get('/token/:token', (req, res) => {
-  const order = row<OrderRow>('SELECT * FROM orders WHERE public_token = ?', req.params.token);
+  const order = row<OrderRow & { restaurant_name: string | null }>(
+    `SELECT o.*, org.name AS restaurant_name FROM orders o
+     LEFT JOIN organizations org ON org.id = o.org_id WHERE o.public_token = ?`,
+    req.params.token
+  );
   if (!order) return res.status(404).json({ error: 'This order link is invalid or expired.' });
   res.json({
     order_number: order.order_number,
@@ -199,6 +203,7 @@ ordersRouter.get('/token/:token', (req, res) => {
     currency: order.currency,
     created_at: order.created_at,
     updated_at: order.updated_at,
+    restaurant_name: order.restaurant_name,
     items: itemsFor(order.id),
   });
 });
@@ -447,7 +452,11 @@ ordersRouter.get('/events', (req: AuthRequest, res) => {
 });
 
 ordersRouter.get('/:id', (req: AuthRequest, res) => {
-  const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
+  const order = row<OrderRow & { restaurant_name: string | null }>(
+    `SELECT o.*, org.name AS restaurant_name FROM orders o
+     LEFT JOIN organizations org ON org.id = o.org_id WHERE o.id = ?`,
+    req.params.id
+  );
   if (!order) return res.status(404).json({ error: 'Order not found' });
   res.json({
     ...order,
@@ -502,10 +511,15 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
   );
   // Text the customer on READY / PARTIALLY_COMPLETED — the user-friendly
   // fallback for iPhones, where web push only works for Home-Screen-installed pages.
+  const restaurantName =
+    row<{ name: string }>(
+      'SELECT org.name AS name FROM organizations org JOIN orders o ON o.org_id = org.id WHERE o.id = ?',
+      order.id
+    )?.name || '';
   if (status === 'READY') {
-    maybeSendReadySms(updated.order_number, updated.customer_phone);
+    maybeSendReadySms(updated.order_number, updated.customer_phone, restaurantName);
   } else if (status === 'PARTIALLY_COMPLETED') {
-    maybeSendReadySms(updated.order_number, updated.customer_phone, true);
+    maybeSendReadySms(updated.order_number, updated.customer_phone, restaurantName, true);
   }
   res.json({ id: updated.id, order_status: updated.order_status, updated_at: ts });
 });

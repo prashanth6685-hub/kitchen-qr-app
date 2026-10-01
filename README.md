@@ -133,6 +133,26 @@ Change these in production. Admins do everything; counter staff create orders
 and take payments; kitchen staff move orders through
 RECEIVED → PREPARING → READY → COMPLETED.
 
+## User accounts & restaurant names
+
+New users can **create their own account** from the login page ("Create an
+account"). Signup asks for a username, a password, and a **restaurant / company
+name**. Every signup creates its own isolated restaurant workspace (menu,
+orders, discount codes, waitlist) with the new user as ADMIN — all
+functionality is available to them, and their data is never mixed with other
+accounts.
+
+The restaurant name is shown:
+- above the login form and in the staff topbar / user menu,
+- on the customer order-tracking page,
+- above the payment-confirmed QR code on the order page,
+- prefixed to order-ready SMS texts and push notifications
+  (e.g. "Nankana's Kitchen: Order Ready 🎉").
+
+The default seeded workspace is named **Nankana's Kitchen**. API:
+- `POST /api/auth/signup` → `{ username, password, restaurant_name }` → `201` + `{ token, user }` (auto-logged-in as ADMIN)
+- `GET /api/public/restaurant-name` → `{ name }` (public, for the login screen)
+
 ## The flow
 
 1. Counter staff: **New order** → pick items → create → take payment.

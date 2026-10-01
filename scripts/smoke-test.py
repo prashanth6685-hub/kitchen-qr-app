@@ -40,6 +40,33 @@ kitchen_tok = d["token"]
 s, d = req("GET", "/api/orders", token="bogus")
 check("bad token rejected", s == 401, f"got {s}")
 
+print("== signup & restaurant name ==")
+import random as _r
+su_name = f"owner{_r.randint(100000, 999999)}"
+s, d = req("GET", "/api/public/restaurant-name")
+check("public restaurant name", s == 200 and d["name"] == "Nankana's Kitchen", f"got {s} {d}")
+s, d = req("POST", "/api/auth/login", body={"username": "admin", "password": "admin123"})
+check("login returns restaurant name", s == 200 and d["user"]["restaurant_name"] == "Nankana's Kitchen", f"got {s} {d}")
+s, d = req("GET", "/api/auth/me", token=counter_tok)
+check("me returns restaurant name", s == 200 and d["user"]["restaurant_name"] == "Nankana's Kitchen", f"got {s} {d}")
+s, d = req("POST", "/api/auth/signup", body={"username": "ab", "password": "secret1", "restaurant_name": "Test"})
+check("signup rejects short username", s == 400, f"got {s} {d}")
+s, d = req("POST", "/api/auth/signup", body={"username": su_name, "password": "123", "restaurant_name": "Test"})
+check("signup rejects short password", s == 400, f"got {s} {d}")
+s, d = req("POST", "/api/auth/signup", body={"username": su_name, "password": "secret1", "restaurant_name": "  "})
+check("signup requires restaurant name", s == 400, f"got {s} {d}")
+s, d = req("POST", "/api/auth/signup", body={"username": su_name, "password": "secret1", "restaurant_name": "Priya's Foods"})
+check("signup creates admin account", s == 201 and d["user"]["role"] == "ADMIN" and d["user"]["restaurant_name"] == "Priya's Foods" and "token" in d, f"got {s} {d}")
+new_tok = d["token"]
+s, d = req("POST", "/api/auth/signup", body={"username": su_name, "password": "secret1", "restaurant_name": "Other"})
+check("signup rejects duplicate username", s == 409, f"got {s} {d}")
+s, d = req("GET", "/api/auth/me", token=new_tok)
+check("new user me has restaurant name", s == 200 and d["user"]["restaurant_name"] == "Priya's Foods", f"got {s} {d}")
+s, d = req("POST", "/api/orders", token=new_tok, body={"items": [{"name": "Garlic Naan", "qty": 1, "unit_price": 349}]})
+check("new admin has full functionality", s == 201, f"got {s} {d}")
+s, d = req("GET", f"/api/orders/token/{d['public_token']}")
+check("customer order page carries restaurant name", s == 200 and d["restaurant_name"] == "Priya's Foods", f"got {s} {d}")
+
 print("== order creation ==")
 s, d = req("POST", "/api/orders", token=counter_tok, body={"items": []})
 check("empty items rejected", s == 400, f"got {s}")
@@ -287,7 +314,7 @@ check("net revenue adds order total", d["net_cents"] - net_before == 8737, str(d
 
 print("== daily report ==")
 import datetime as _dt
-today = _dt.date.today().isoformat()
+today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()  # server buckets days in UTC
 # the oid5 order (10 biryani + 3 naan) was completed just now — it must show up today
 s, d = req("GET", "/api/orders/report/daily?days=7", token=counter_tok)
 today_row = next((r for r in d if r["day"] == today), None)

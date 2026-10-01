@@ -35,7 +35,7 @@ if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) {
 // --- Organization / location / counters ---
 let org = row<{ id: number }>('SELECT id FROM organizations LIMIT 1');
 if (!org) {
-  const r = run('INSERT INTO organizations (name) VALUES (?)', 'Your Kitchen');
+  const r = run('INSERT INTO organizations (name) VALUES (?)', "Nankana's Kitchen");
   org = { id: Number(r.lastInsertRowid) };
   const loc = run('INSERT INTO locations (org_id, name) VALUES (?, ?)', org.id, 'Main Location');
   const locId = Number(loc.lastInsertRowid);

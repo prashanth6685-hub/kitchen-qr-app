@@ -272,7 +272,7 @@ function topBar() {
   const initial = esc((user.username || '?').charAt(0).toUpperCase());
   return `
   <div class="topbar">
-    <div class="brand"><span>●</span> Kitchen Orders</div>
+    <div class="brand"><span>●</span> ${esc(user.restaurant_name || 'Kitchen Orders')}</div>
     <nav class="mainnav">
       <a class="nav-pill nav-orders" href="/staff">Orders</a>
       ${canOrder ? '<a class="nav-pill nav-new" href="/staff/new">New</a>' : ''}
@@ -286,6 +286,7 @@ function topBar() {
         <div class="user-menu" id="user-menu" style="display:none">
           <div class="head">
             <div class="nm">${esc(displayName(user.username))}</div>
+            ${user.restaurant_name ? `<div class="rn" style="font-weight:700">${esc(user.restaurant_name)}</div>` : ''}
             <div class="un">@${esc(user.username)} · ID ${esc(user.id)} · ${esc(roleLabel(user.role))}</div>
           </div>
           ${
@@ -363,13 +364,13 @@ function LoginPage() {
     <div class="login-hero" style="background-image:url('${hero}')">
       <div class="tag">
         <h2>From order to table,<br>without the chaos.</h2>
-        <p>Live kitchen display, QR ordering & table waitlist â all in one place.</p>
+        <p>Live kitchen display, QR ordering & table waitlist — all in one place.</p>
       </div>
     </div>
     <div class="login-panel">
       <div class="login-logo">🍽️</div>
-      <h1>Kitchen Orders</h1>
-      <p class="sub">Staff sign in â admins take orders, kitchen fires them up.</p>
+      <h1 id="login-brand">Kitchen Orders</h1>
+      <p class="sub">Staff sign in — admins take orders, kitchen fires them up.</p>
       <div class="error" id="login-error" style="display:none"></div>
       <form id="login-form">
         <label class="field">
@@ -382,6 +383,23 @@ function LoginPage() {
         </label>
         <button class="btn block" id="login-btn" type="submit">Log in</button>
       </form>
+      <p class="sub" id="goto-signup" style="text-align:center">New here? <a class="link" href="#" id="show-signup">Create an account</a></p>
+      <form id="signup-form" style="display:none">
+        <label class="field">
+          <span>Username</span>
+          <input id="su-user" autocomplete="username" placeholder="e.g. priya" />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input id="su-pass" type="password" autocomplete="new-password" placeholder="••••••••" />
+        </label>
+        <label class="field">
+          <span>Restaurant / company name</span>
+          <input id="su-restaurant" autocomplete="organization" placeholder="e.g. Nankana's Kitchen" />
+        </label>
+        <button class="btn block" id="signup-btn" type="submit">Create account</button>
+        <p class="sub" style="text-align:center">Already have an account? <a class="link" href="#" id="show-login">Log in</a></p>
+      </form>
       <div class="login-accounts">
         <b>Demo accounts</b><br>
         Admin &mdash; <b>admin / admin123</b> (takes orders, manages everything)<br>
@@ -391,29 +409,85 @@ function LoginPage() {
     </div>
   </div>`;
 
-  const form = document.getElementById('login-form');
+  // Show the restaurant name above the login form.
+  fetch('/api/public/restaurant-name')
+    .then((r) => r.json())
+    .then((d) => {
+      const h1 = document.getElementById('login-brand');
+      if (h1 && d && d.name) h1.textContent = d.name;
+    })
+    .catch(() => {});
+
+  const loginForm = document.getElementById('login-form');
+  const signupForm = document.getElementById('signup-form');
+  const gotoSignup = document.getElementById('goto-signup');
   const errBox = document.getElementById('login-error');
-  const btn = document.getElementById('login-btn');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Signing in…';
+  const showErr = (msg) => {
+    errBox.textContent = msg;
+    errBox.style.display = 'block';
+  };
+  const hideErr = () => {
     errBox.style.display = 'none';
+  };
+  document.getElementById('show-signup').addEventListener('click', (e) => {
+    e.preventDefault();
+    hideErr();
+    loginForm.style.display = 'none';
+    gotoSignup.style.display = 'none';
+    signupForm.style.display = 'block';
+  });
+  document.getElementById('show-login').addEventListener('click', (e) => {
+    e.preventDefault();
+    hideErr();
+    signupForm.style.display = 'none';
+    loginForm.style.display = 'block';
+    gotoSignup.style.display = 'block';
+  });
+
+  const loginBtn = document.getElementById('login-btn');
+  loginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    loginBtn.disabled = true;
+    loginBtn.innerHTML = '<span class="spinner"></span> Signing in…';
+    hideErr();
     try {
       const data = await api('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({
-          username: document.getElementById('login-user').value,
+          username: document.getElementById('login-user').value.trim(),
           password: document.getElementById('login-pass').value,
         }),
       });
       saveSession(data.token, data.user);
       go('/staff');
     } catch (err) {
-      errBox.textContent = err.message;
-      errBox.style.display = 'block';
-      btn.disabled = false;
-      btn.textContent = 'Log in';
+      showErr(err.message);
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'Log in';
+    }
+  });
+
+  const signupBtn = document.getElementById('signup-btn');
+  signupForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    signupBtn.disabled = true;
+    signupBtn.innerHTML = '<span class="spinner"></span> Creating account…';
+    hideErr();
+    try {
+      const data = await api('/api/auth/signup', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: document.getElementById('su-user').value.trim(),
+          password: document.getElementById('su-pass').value,
+          restaurant_name: document.getElementById('su-restaurant').value.trim(),
+        }),
+      });
+      saveSession(data.token, data.user);
+      go('/staff');
+    } catch (err) {
+      showErr(err.message);
+      signupBtn.disabled = false;
+      signupBtn.textContent = 'Create account';
     }
   });
 }
@@ -1786,6 +1860,7 @@ function StaffOrderDetailPage({ id }) {
       ${order.order_status === 'PAID' ? `<div class="card"><div class="info">💡 Next step: open the <a class="link" href="/kitchen">Kitchen page</a> and tap <b>Accept order</b> to start preparing it.</div></div>` : ''}
       <div class="card qr-box">
         <h2>✅ Payment confirmed</h2>
+        ${order.restaurant_name ? `<p class="sub" style="margin:0"><b>${esc(order.restaurant_name)}</b></p>` : ''}
         <p class="sub">Show this QR code to the customer — scanning opens their live order page.</p>
         <img src="${qrSrc}" alt="QR code for order ${order.order_number}" />
         <div class="mono" style="margin-top:12px">${esc(order.tracking_url)}</div>
@@ -2290,7 +2365,7 @@ function CustomerOrderPage({ token }) {
     root.innerHTML = `
     <div class="page">
       <div class="topbar" style="position:static;border-radius:14px;margin-bottom:4px">
-        <div class="brand"><span>●</span> YOUR KITCHEN</div>
+        <div class="brand"><span>●</span> ${esc(order.restaurant_name || 'Kitchen Orders')}</div>
         <span class="who">${live ? '● live' : '○ connecting…'}</span>
       </div>
 
