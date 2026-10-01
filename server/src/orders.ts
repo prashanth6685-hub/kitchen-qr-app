@@ -94,13 +94,12 @@ interface OrderItemClean extends OrderItemInput {
  *   - '' (empty)      -> clears the code from every line.
  *   - undefined       -> legacy per-line `discount_code` values are honored.
  */
-function cleanItemsInput(items: any, applyCode?: string | null): OrderItemClean[] {
-  if (!Array.isArray(items) || items.length === 0) {
+async function cleanItemsInput(items: any, applyCode?: string | null): Promise<OrderItemClean[]> {  if (!Array.isArray(items) || items.length === 0) {
     throw new Error('At least one item is required');
   }
   const orderCode = applyCode === undefined ? undefined : normalizeCode(String(applyCode || ''));
   if (orderCode) {
-    const dc = findCode(orderCode);
+    const dc = await findCode(orderCode);
     if (!dc) throw new Error('Discount code not found');
     if (!dc.active) throw new Error(`Code ${dc.code} is inactive`);
   }
@@ -124,14 +123,14 @@ function cleanItemsInput(items: any, applyCode?: string | null): OrderItemClean[
       // Legacy per-line code path.
       const codeRaw = it.discount_code ? normalizeCode(String(it.discount_code)) : null;
       if (codeRaw) {
-        const applied = applyCodeToLine(codeRaw, name, qty, unit);
+        const applied = await applyCodeToLine(codeRaw, name, qty, unit);
         if (!applied.ok) throw new Error(applied.error);
         code = applied.code!;
         codeDisc = applied.code_discount_cents!;
       }
     } else if (orderCode) {
       // Order-level code: applies only where applicable, never errors per line.
-      const applied = applyCodeToLine(orderCode, name, qty, unit);
+      const applied = await applyCodeToLine(orderCode, name, qty, unit);
       if (applied.ok) {
         code = applied.code!;
         codeDisc = applied.code_discount_cents!;
@@ -157,8 +156,8 @@ function cleanItemsInput(items: any, applyCode?: string | null): OrderItemClean[
   return clean;
 }
 
-function itemsFor(orderId: number) {
-  return all(
+async function itemsFor(orderId: number) {
+  return await all(
     `SELECT item_name, quantity, unit_price_cents, total_price_cents,
             discount_cents, discount_code, code_discount_cents
      FROM order_items WHERE order_id = ?`,
@@ -176,20 +175,20 @@ function computeTotals(lines: OrderItemClean[], orderDiscountCents: number) {
   return { itemsTotal, discount_cents: discount, total_cents: itemsTotal - discount };
 }
 
-function nextOrderNumber(): number {
-  const r = row<{ m: number | null }>('SELECT MAX(order_number) AS m FROM orders');
+async function nextOrderNumber(): Promise<number> {
+  const r = await row<{ m: number | null }>('SELECT MAX(order_number) AS m FROM orders');
   return (r?.m ?? 999) + 1;
 }
 
-function defaultCounterId(): number | null {
-  const c = row<{ id: number }>('SELECT id FROM counters ORDER BY id LIMIT 1');
+async function defaultCounterId(): Promise<number | null> {
+  const c = await row<{ id: number }>('SELECT id FROM counters ORDER BY id LIMIT 1');
   return c?.id ?? null;
 }
 
 // ---------- Public customer endpoints (secure token, no login) ----------
 
-ordersRouter.get('/token/:token', (req, res) => {
-  const order = row<OrderRow & { restaurant_name: string | null }>(
+ordersRouter.get('/token/:token', async (req, res) => {
+  const order = await row<OrderRow & { restaurant_name: string | null }>(
     `SELECT o.*, org.name AS restaurant_name FROM orders o
      LEFT JOIN organizations org ON org.id = o.org_id WHERE o.public_token = ?`,
     req.params.token
@@ -207,12 +206,12 @@ ordersRouter.get('/token/:token', (req, res) => {
     created_at: order.created_at,
     updated_at: order.updated_at,
     restaurant_name: order.restaurant_name,
-    items: itemsFor(order.id),
+    items: await itemsFor(order.id),
   });
 });
 
-ordersRouter.get('/token/:token/events', (req, res) => {
-  const order = row<OrderRow>('SELECT * FROM orders WHERE public_token = ?', req.params.token);
+ordersRouter.get('/token/:token/events', async (req, res) => {
+  const order = await row<OrderRow>('SELECT * FROM orders WHERE public_token = ?', req.params.token);
   if (!order) return res.status(404).end();
   sseInit(res);
   subscribeToken(order.public_token, res);
@@ -239,7 +238,7 @@ ordersRouter.post(
 
     let cleanItems: OrderItemClean[];
     try {
-      cleanItems = cleanItemsInput(items);
+      cleanItems = await cleanItemsInput(items);
     } catch (e: any) {
       return res.status(400).json({ error: e.message });
     }
@@ -248,9 +247,9 @@ ordersRouter.post(
     if (total <= 0) return res.status(400).json({ error: 'Order total must be greater than zero' });
 
     const token = generatePublicToken();
-    const orderNumber = nextOrderNumber();
+    const orderNumber = await nextOrderNumber();
     const ts = now();
-    const insert = run(
+    const insert = await run(
       `INSERT INTO orders (public_token, org_id, location_id, counter_id, order_number,
         customer_name, customer_phone, customer_email, customer_carrier, special_instructions, total_cents, currency,
         payment_status, order_status, created_at, updated_at)
@@ -258,7 +257,7 @@ ordersRouter.post(
       token,
       req.user!.org_id,
       null,
-      counter_id ?? defaultCounterId(),
+      counter_id ?? await defaultCounterId(),
       orderNumber,
       customer_name ? String(customer_name).slice(0, 120) : null,
       customer_phone ? String(customer_phone).slice(0, 40) : null,
@@ -271,7 +270,7 @@ ordersRouter.post(
     );
     const orderId = Number(insert.lastInsertRowid);
     for (const i of cleanItems) {
-      run(
+      await run(
         `INSERT INTO order_items (order_id, item_name, quantity, unit_price_cents, total_price_cents,
            discount_cents, discount_code, code_discount_cents)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -285,7 +284,7 @@ ordersRouter.post(
         i.code_discount_cents
       );
     }
-    run(
+    await run(
       'INSERT INTO order_status_history (order_id, old_status, new_status, changed_by) VALUES (?, NULL, ?, ?)',
       orderId,
       'PENDING_PAYMENT',
@@ -317,7 +316,7 @@ ordersRouter.post(
 // Admin: sales report aggregated over COMPLETED orders — per-item qty sold,
 // gross amount, item-level discounts and net, plus order-level totals.
 // Optional ?from= / ?to= (ISO datetimes) restrict to orders completed in [from, to).
-ordersRouter.get('/report/summary', requireRole('ADMIN'), (req: AuthRequest, res) => {
+ordersRouter.get('/report/summary', requireRole('ADMIN'), async (req: AuthRequest, res) => {
   const { from, to } = req.query as Record<string, string>;
   const rangeClauses = [`order_status = 'COMPLETED'`];
   const rangeParams: any[] = [];
@@ -330,7 +329,7 @@ ordersRouter.get('/report/summary', requireRole('ADMIN'), (req: AuthRequest, res
     rangeParams.push(to);
   }
   const rangeWhere = rangeClauses.join(' AND ');
-  const items = all<{
+  const items = await all<{
     item_name: string;
     orders: number;
     qty: number;
@@ -353,7 +352,7 @@ ordersRouter.get('/report/summary', requireRole('ADMIN'), (req: AuthRequest, res
      ORDER BY qty DESC, item_name ASC`,
     ...rangeParams
   );
-  const totals = row<{
+  const totals = (await row<{
     orders: number;
     order_discount_cents: number;
     net_cents: number;
@@ -363,7 +362,7 @@ ordersRouter.get('/report/summary', requireRole('ADMIN'), (req: AuthRequest, res
             COALESCE(SUM(total_cents), 0) AS net_cents
      FROM orders WHERE ${rangeWhere}`,
     ...rangeParams
-  )!;
+  ))!;
   const itemGross = items.reduce((s, i) => s + (i.gross_cents || 0), 0);
   const itemDiscountTotal = items.reduce((s, i) => s + (i.discount_cents || 0), 0);
   res.json({
@@ -378,15 +377,15 @@ ordersRouter.get('/report/summary', requireRole('ADMIN'), (req: AuthRequest, res
 
 // Admin: per-day totals for the last N days (UTC day boundaries) — trend view
 // for business expansion planning: [{ day: 'YYYY-MM-DD', orders, items, net_cents }].
-ordersRouter.get('/report/daily', requireRole('ADMIN'), (req: AuthRequest, res) => {
+ordersRouter.get('/report/daily', requireRole('ADMIN'), async (req: AuthRequest, res) => {
   const days = Math.min(Math.max(parseInt((req.query.days as string) || '7', 10) || 7, 1), 90);
   const since = `-${days - 1} days`;
-  const perOrder = all<{ day: string; total_cents: number }>(
+  const perOrder = await all<{ day: string; total_cents: number }>(
     `SELECT date(completed_at) AS day, total_cents FROM orders
      WHERE order_status = 'COMPLETED' AND completed_at >= datetime('now', ?)`,
     since
   );
-  const perItem = all<{ day: string; qty: number }>(
+  const perItem = await all<{ day: string; qty: number }>(
     `SELECT date(o.completed_at) AS day, SUM(oi.quantity) AS qty
      FROM orders o JOIN order_items oi ON oi.order_id = o.id
      WHERE o.order_status = 'COMPLETED' AND o.completed_at >= datetime('now', ?)
@@ -413,7 +412,7 @@ ordersRouter.get('/report/daily', requireRole('ADMIN'), (req: AuthRequest, res) 
   res.json([...byDay.values()].sort((a, b) => (a.day < b.day ? 1 : -1)));
 });
 
-ordersRouter.get('/', (req: AuthRequest, res) => {
+ordersRouter.get('/', async (req: AuthRequest, res) => {
   const { status, q, limit } = req.query as Record<string, string>;
   const clauses: string[] = [];
   const params: any[] = [];
@@ -426,38 +425,42 @@ ordersRouter.get('/', (req: AuthRequest, res) => {
     params.push(`%${q}%`, `%${q}%`);
   }
   const lim = Math.min(Math.max(parseInt(limit || '100', 10) || 100, 1), 500);
-  const rows = all<OrderRow>(
+  const rows = await all<OrderRow>(
     `SELECT o.* FROM orders o ${clauses.length ? 'WHERE ' + clauses.join(' AND ') : ''}
      ORDER BY o.created_at DESC LIMIT ${lim}`,
     ...params
   );
   res.json(
-    rows.map((o) => ({
-      id: o.id,
-      order_number: o.order_number,
-      customer_name: o.customer_name,
-      order_status: o.order_status,
-      payment_status: o.payment_status,
-      total_cents: o.total_cents,
-    discount_cents: o.discount_cents || 0,
-      created_at: o.created_at,
-      item_count: row<{ c: number }>(
-        'SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?',
-        o.id
-      )?.c,
-    }))
+    await Promise.all(
+      rows.map(async (o) => ({
+        id: o.id,
+        order_number: o.order_number,
+        customer_name: o.customer_name,
+        order_status: o.order_status,
+        payment_status: o.payment_status,
+        total_cents: o.total_cents,
+        discount_cents: o.discount_cents || 0,
+        created_at: o.created_at,
+        item_count: (
+          await row<{ c: number }>(
+            'SELECT COUNT(*) AS c FROM order_items WHERE order_id = ?',
+            o.id
+          )
+        )?.c,
+      }))
+    )
   );
 });
 
 // Staff live feed for dashboards / kitchen screens.
-ordersRouter.get('/events', (req: AuthRequest, res) => {
+ordersRouter.get('/events', async (req: AuthRequest, res) => {
   sseInit(res);
   subscribeAll(res);
   req.on('close', () => unsubscribeAll(res));
 });
 
-ordersRouter.get('/:id', (req: AuthRequest, res) => {
-  const order = row<OrderRow & { restaurant_name: string | null }>(
+ordersRouter.get('/:id', async (req: AuthRequest, res) => {
+  const order = await row<OrderRow & { restaurant_name: string | null }>(
     `SELECT o.*, org.name AS restaurant_name FROM orders o
      LEFT JOIN organizations org ON org.id = o.org_id WHERE o.id = ?`,
     req.params.id
@@ -465,16 +468,16 @@ ordersRouter.get('/:id', (req: AuthRequest, res) => {
   if (!order) return res.status(404).json({ error: 'Order not found' });
   res.json({
     ...order,
-    items: itemsFor(order.id),
+    items: await itemsFor(order.id),
     tracking_url: trackingUrl(order.public_token),
-    history: all(
+    history: await all(
       'SELECT old_status, new_status, changed_by, changed_at FROM order_status_history WHERE order_id = ? ORDER BY id',
       order.id
     ),
   });
 });
 
-ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
+ordersRouter.patch('/:id/status', async (req: AuthRequest, res) => {
   const { status } = req.body ?? {};
   if (typeof status !== 'string' || !TRANSITIONS[status]) {
     return res.status(400).json({ error: 'Invalid status' });
@@ -482,7 +485,7 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
   if (!canSetStatus(req.user!.role, status)) {
     return res.status(403).json({ error: 'Your role cannot set this status' });
   }
-  const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
+  const order = await row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   if (!(TRANSITIONS[order.order_status] || []).includes(status)) {
     return res
@@ -498,18 +501,18 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
 
   const ts = now();
   if (status === 'COMPLETED') {
-    run('UPDATE orders SET order_status = ?, updated_at = ?, completed_at = ? WHERE id = ?', status, ts, ts, order.id);
+    await run('UPDATE orders SET order_status = ?, updated_at = ?, completed_at = ? WHERE id = ?', status, ts, ts, order.id);
   } else {
-    run('UPDATE orders SET order_status = ?, updated_at = ? WHERE id = ?', status, ts, order.id);
+    await run('UPDATE orders SET order_status = ?, updated_at = ? WHERE id = ?', status, ts, order.id);
   }
-  run(
+  await run(
     'INSERT INTO order_status_history (order_id, old_status, new_status, changed_by) VALUES (?, ?, ?, ?)',
     order.id,
     order.order_status,
     status,
     req.user!.username
   );
-  const updated = row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id)!;
+  const updated = (await row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id))!;
   broadcastOrderUpdate(updated);
   notifyOrderStatus(order.id, updated.order_number, status, updated.public_token).catch((e) =>
     console.error('[orders] push notify failed', e)
@@ -518,9 +521,11 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
   // fallback for iPhones, where web push only works for Home-Screen-installed pages.
   // (READY was removed from the flow — COMPLETED is now the pickup moment.)
   const restaurantName =
-    row<{ name: string }>(
-      'SELECT org.name AS name FROM organizations org JOIN orders o ON o.org_id = org.id WHERE o.id = ?',
-      order.id
+    (
+      await row<{ name: string }>(
+        'SELECT org.name AS name FROM organizations org JOIN orders o ON o.org_id = org.id WHERE o.id = ?',
+        order.id
+      )
     )?.name || '';
   if (status === 'COMPLETED') {
     maybeSendReadySms(updated.order_number, updated.customer_phone, restaurantName);
@@ -546,8 +551,8 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
 // Admin: apply/change an order-level discount (flat cents) while the order is
 // still editable (PENDING_PAYMENT, PAID or RECEIVED). Total is recalculated
 // from items (net of per-item discounts) minus this discount.
-ordersRouter.patch('/:id/discount', requireRole('ADMIN'), (req: AuthRequest, res) => {
-  const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
+ordersRouter.patch('/:id/discount', requireRole('ADMIN'), async (req: AuthRequest, res) => {
+  const order = await row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   if (!EDITABLE_STATUSES.includes(order.order_status)) {
     return res.status(409).json({ error: 'Order can no longer be discounted — the kitchen has started preparing it' });
@@ -556,18 +561,20 @@ ordersRouter.patch('/:id/discount', requireRole('ADMIN'), (req: AuthRequest, res
   if (!Number.isFinite(discount) || discount < 0) {
     return res.status(400).json({ error: 'Invalid discount' });
   }
-  const lines = all<{ quantity: number; unit_price_cents: number; discount_cents: number; code_discount_cents: number }>(
-    'SELECT quantity, unit_price_cents, discount_cents, code_discount_cents FROM order_items WHERE order_id = ?',
-    order.id
+  const lines = (
+    await all<{ quantity: number; unit_price_cents: number; discount_cents: number; code_discount_cents: number }>(
+      'SELECT quantity, unit_price_cents, discount_cents, code_discount_cents FROM order_items WHERE order_id = ?',
+      order.id
+    )
   ).map((l) => ({
     name: '', qty: l.quantity, unit_price_cents: l.unit_price_cents,
     discount_cents: l.discount_cents || 0, discount_code: null, code_discount_cents: l.code_discount_cents || 0,
   }));
   const { itemsTotal, discount_cents, total_cents } = computeTotals(lines, discount);
   const ts = now();
-  run('UPDATE orders SET discount_cents = ?, total_cents = ?, updated_at = ? WHERE id = ?',
+  await run('UPDATE orders SET discount_cents = ?, total_cents = ?, updated_at = ? WHERE id = ?',
     discount_cents, total_cents, ts, order.id);
-  const updated = row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id)!;
+  const updated = (await row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id))!;
   broadcastOrderUpdate(updated);
   res.json({ id: updated.id, discount_cents: updated.discount_cents, total_cents: updated.total_cents, items_total_cents: itemsTotal });
 });
@@ -575,24 +582,24 @@ ordersRouter.patch('/:id/discount', requireRole('ADMIN'), (req: AuthRequest, res
 // Admin: replace the order's items while it is still editable
 // (PENDING_PAYMENT, PAID or RECEIVED). Locked once the kitchen starts preparing.
 // Each line may carry a manual discount_cents and/or a discount_code.
-ordersRouter.patch('/:id/items', requireRole('ADMIN'), (req: AuthRequest, res) => {
-  const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
+ordersRouter.patch('/:id/items', requireRole('ADMIN'), async (req: AuthRequest, res) => {
+  const order = await row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   if (!EDITABLE_STATUSES.includes(order.order_status)) {
     return res.status(409).json({ error: 'Order can no longer be edited — the kitchen has started preparing it' });
   }
   let clean: OrderItemClean[];
   try {
-    clean = cleanItemsInput(req.body?.items, req.body?.apply_code);
+    clean = await cleanItemsInput(req.body?.items, req.body?.apply_code);
   } catch (e: any) {
     return res.status(400).json({ error: e.message });
   }
   const { total_cents, discount_cents } = computeTotals(clean, order.discount_cents || 0);
   if (total_cents <= 0) return res.status(400).json({ error: 'Order total must be greater than zero' });
   const ts = now();
-  run('DELETE FROM order_items WHERE order_id = ?', order.id);
+  await run('DELETE FROM order_items WHERE order_id = ?', order.id);
   for (const i of clean) {
-    run(
+    await run(
       `INSERT INTO order_items (order_id, item_name, quantity, unit_price_cents, total_price_cents,
          discount_cents, discount_code, code_discount_cents)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -600,36 +607,36 @@ ordersRouter.patch('/:id/items', requireRole('ADMIN'), (req: AuthRequest, res) =
       i.discount_cents, i.discount_code, i.code_discount_cents
     );
   }
-  run('UPDATE orders SET discount_cents = ?, total_cents = ?, updated_at = ? WHERE id = ?',
+  await run('UPDATE orders SET discount_cents = ?, total_cents = ?, updated_at = ? WHERE id = ?',
     discount_cents, total_cents, ts, order.id);
-  run(
+  await run(
     'INSERT INTO order_status_history (order_id, old_status, new_status, changed_by) VALUES (?, ?, ?, ?)',
     order.id, order.order_status, order.order_status, req.user!.username + ' (items edited)'
   );
-  const updated = row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id)!;
+  const updated = (await row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id))!;
   broadcastOrderUpdate(updated);
   res.json({ id: updated.id, total_cents: updated.total_cents, discount_cents: updated.discount_cents });
 });
 
 // Admin: update the order's special instructions while it is still editable
 // (PENDING_PAYMENT, PAID or RECEIVED). Locked once the kitchen starts preparing.
-ordersRouter.patch('/:id/instructions', requireRole('ADMIN'), (req: AuthRequest, res) => {
-  const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
+ordersRouter.patch('/:id/instructions', requireRole('ADMIN'), async (req: AuthRequest, res) => {
+  const order = await row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   if (!EDITABLE_STATUSES.includes(order.order_status)) {
     return res.status(409).json({ error: 'Instructions can no longer be changed — the kitchen has started preparing it' });
   }
   const notes = String(req.body?.special_instructions ?? '').trim().slice(0, 500);
   const ts = now();
-  run('UPDATE orders SET special_instructions = ?, updated_at = ? WHERE id = ?', notes || null, ts, order.id);
-  const updated = row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id)!;
+  await run('UPDATE orders SET special_instructions = ?, updated_at = ? WHERE id = ?', notes || null, ts, order.id);
+  const updated = (await row<OrderRow>('SELECT * FROM orders WHERE id = ?', order.id))!;
   broadcastOrderUpdate(updated);
   res.json({ id: updated.id, special_instructions: updated.special_instructions });
 });
 
 // QR code image — ONLY available once payment is confirmed.
-ordersRouter.get('/:id/qr.png', (req: AuthRequest, res) => {
-  const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
+ordersRouter.get('/:id/qr.png', async (req: AuthRequest, res) => {
+  const order = await row<OrderRow>('SELECT * FROM orders WHERE id = ?', req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   if (order.payment_status !== 'PAID') {
     return res
@@ -666,9 +673,9 @@ ordersRouter.post(
 ordersRouter.post(
   '/:id/payments/cash',
   requireRole('ADMIN'),
-  (req: AuthRequest, res) => {
+  async (req: AuthRequest, res) => {
     try {
-      const result = markOrderPaid(Number(req.params.id), 'cash', null);
+      const result = await markOrderPaid(Number(req.params.id), 'cash', null);
       res.json({ ...result, provider: 'cash' });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -677,12 +684,12 @@ ordersRouter.post(
 );
 
 // DEMO ONLY: simulated card payment for testing without Stripe keys.
-ordersRouter.post('/:id/payments/demo', requireRole('ADMIN'), (req, res) => {
+ordersRouter.post('/:id/payments/demo', requireRole('ADMIN'), async (req, res) => {
   if (!DEMO_PAYMENTS) {
     return res.status(403).json({ error: 'Demo payments are disabled' });
   }
   try {
-    const result = markOrderPaid(Number(req.params.id), 'demo', `demo_${Date.now()}`);
+    const result = await markOrderPaid(Number(req.params.id), 'demo', `demo_${Date.now()}`);
     res.json({ ...result, provider: 'demo', warning: 'DEMO PAYMENT — not a real charge' });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
