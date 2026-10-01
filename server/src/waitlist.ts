@@ -513,8 +513,8 @@ waitlistRouter.get('/admin/summary', requireAuth, (req: AuthRequest, res) => {
     `SELECT * FROM waitlist_entries WHERE location_id = ? AND ${ACTIVE_STATUSES} ORDER BY queue_seq`,
     locationId
   );
-  const counts: Record<string, number> = { WAITING: 0, ALMOST_READY: 0, CALLED: 0 };
-  for (const e of entries) counts[e.status] = (counts[e.status] || 0) + 1;
+  const counts: Record<string, number> = { WAITING: 0, CALLED: 0 };
+  for (const e of entries) if (e.status === 'WAITING' || e.status === 'CALLED') counts[e.status]++;
   res.json({
     location_id: locationId,
     now_serving: currentlyServing(locationId),
@@ -607,7 +607,6 @@ function staffAction(path: string, newStatus: string | null, eventType: string) 
   });
 }
 
-staffAction('/almost-ready', 'ALMOST_READY', 'ALMOST_READY');
 staffAction('/call', 'CALLED', 'CALLED');
 staffAction('/recall', null, 'RECALLED');
 staffAction('/seated', 'SEATED', 'SEATED');

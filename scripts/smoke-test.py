@@ -365,6 +365,30 @@ check("empty range is empty", s == 200 and d["orders"] == 0 and d["items"] == []
 s, d = req("GET", f"/api/orders/{oid5}", token=counter_tok)
 check("completed_at stamped", s == 200 and bool(d.get("completed_at")), f"got {s} {d.get('completed_at')}")
 
+print("== waitlist: recall & no almost-ready ==")
+s, d = req("GET", "/api/waitlist/admin/locations", token=counter_tok)
+check("waitlist locations load", s == 200 and len(d) > 0, f"got {s}")
+wl_loc = d[0]
+s, d = req("POST", "/api/waitlist/check-in", body={"location_id": wl_loc["id"], "customer_name": "Recall Test", "party_size": 2})
+check("waitlist check-in works", s == 201 and "public_token" in d, f"got {s} {d}")
+qn = d["queue_number"]
+s, d = req("GET", f"/api/waitlist/admin/summary?location_id={wl_loc['id']}", token=counter_tok)
+wl_id = next(e["id"] for e in d["entries"] if e["queue_number"] == qn)
+s, d = req("POST", f"/api/waitlist/{wl_id}/call", token=counter_tok)
+check("call marks CALLED", s == 200 and d["status"] == "CALLED", f"got {s} {d}")
+for i in (1, 2, 3):
+    s, d = req("POST", f"/api/waitlist/{wl_id}/recall", token=counter_tok)
+    check(f"recall #{i} re-notifies, stays CALLED", s == 200 and d["status"] == "CALLED" and d["recall_count"] == i, f"got {s} {d}")
+s, d = req("POST", "/api/waitlist/check-in", body={"location_id": wl_loc["id"], "customer_name": "Waiting Test", "party_size": 2})
+qn2 = d["queue_number"]
+s, d = req("GET", f"/api/waitlist/admin/summary?location_id={wl_loc['id']}", token=counter_tok)
+check("summary counts have no ALMOST_READY", s == 200 and "ALMOST_READY" not in d["counts"] and set(d["counts"]) == {"WAITING", "CALLED"}, f"got {s} {d.get('counts')}")
+wl_waiting = next(e["id"] for e in d["entries"] if e["queue_number"] == qn2)
+s, d = req("POST", f"/api/waitlist/{wl_waiting}/recall", token=counter_tok)
+check("recall on WAITING entry rejected", s == 409, f"got {s} {d}")
+s, d = req("POST", f"/api/waitlist/{wl_waiting}/almost-ready", token=counter_tok)
+check("almost-ready action removed", s == 404, f"got {s} {d}")
+
 print("== waitlist client checks (static) ==")
 import os as _os
 _client = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "client", "app.js")
@@ -377,6 +401,8 @@ check("topbar uses old-style nav buttons", "nav-btn" in _src and "nav-pill" not 
 check("waitlist nav has count badge", all(x in _src for x in ("nav-waitlist-count", "nav-badge", "active_count")))
 check("temp quick test login is gated", "quick-login-btn" in _src and "get('test') === '1'" in _src)
 check("username rule is min 5 only", "Min 5 characters (letters, numbers, . _ -)." in _src and "or 4 characters" not in _src)
+check("CALLED rows have CALL AGAIN button", 'data-act="recall"' in _src and "CALL AGAIN" in _src)
+check("customer texts don't promise almost-ready push", "your table is almost ready" not in _src.lower())
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

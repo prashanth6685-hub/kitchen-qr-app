@@ -2615,7 +2615,7 @@ function makePushController(onChange, opts) {
       return `
       <div class="card">
         <h2>${esc(heading || 'Get notified')}</h2>
-        <p class="sub">${esc(blurb || "We'll notify you when your table is almost ready and when it's your turn.")}</p>
+        <p class="sub">${esc(blurb || "We'll notify you the moment your table is ready.")}</p>
         ${body}
         ${this.msg ? `<div class="info">${esc(this.msg)}</div>` : ''}
       </div>`;
@@ -2787,8 +2787,8 @@ function WaitlistTrackingPage({ token }) {
   const push = makePushController(render, {
     token,
     subscribePath: '/api/waitlist/notifications/subscribe',
-    doneMessage: "We'll notify you when your table is almost ready.",
-    blurb: "We'll notify you when your table is almost ready and when it's your turn.",
+    doneMessage: "We'll notify you the moment your table is ready.",
+    blurb: "We'll notify you the moment your table is ready.",
   });
 
   async function refresh() {
@@ -3130,11 +3130,15 @@ function StaffWaitlistPage() {
     notice = null;
     render();
     try {
-      await api(`/api/waitlist/${id}/${action}`, { method: 'POST' });
+      const r = await api(`/api/waitlist/${id}/${action}`, { method: 'POST' });
       busy = null;
       selectMode = false;
       selectedId = null;
       lastSig = '';
+      if (action === 'recall' && r) {
+        notice = `Reminder sent to ${r.queue_number} (${r.recall_count}×).`;
+        noticeKind = 'ok';
+      }
       await load();
     } catch (e) {
       busy = null;
@@ -3189,6 +3193,13 @@ function StaffWaitlistPage() {
                <button class="btn sm ${primary[2]}" data-act="${primary[0]}" data-id="${e.id}" ${
               busy === `${primary[0]}:${e.id}` ? 'disabled' : ''
             }>${busy === `${primary[0]}:${e.id}` ? '…' : primary[1]}</button>
+               ${
+                 e.status === 'CALLED'
+                   ? `<button class="btn sm secondary" data-act="recall" data-id="${e.id}" ${
+                       busy === `recall:${e.id}` ? 'disabled' : ''
+                     }>${busy === `recall:${e.id}` ? '…' : 'CALL AGAIN'}</button>`
+                   : ''
+               }
                <button class="btn sm danger" data-confirm-cancel="${e.id}" data-num="${esc(
               e.queue_number
             )}">CANCEL</button>
