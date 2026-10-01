@@ -46,8 +46,8 @@ function orderPublicShape(o: OrderRow) {
   };
 }
 
-function recordStatusHistory(orderId: number, oldStatus: string | null, newStatus: string, changedBy: string) {
-  run(
+async function recordStatusHistory(orderId: number, oldStatus: string | null, newStatus: string, changedBy: string) {
+  await run(
     'INSERT INTO order_status_history (order_id, old_status, new_status, changed_by) VALUES (?, ?, ?, ?)',
     orderId,
     oldStatus,
@@ -63,8 +63,8 @@ function recordStatusHistory(orderId: number, oldStatus: string | null, newStatu
  *  - the DEMO endpoint (DEMO_PAYMENTS=true only, clearly labeled).
  * Never mark an order paid from the frontend's word alone.
  */
-export function markOrderPaid(orderId: number, provider: string, providerReference: string | null) {
-  const order = row<OrderRow>('SELECT * FROM orders WHERE id = ?', orderId);
+export async function markOrderPaid(orderId: number, provider: string, providerReference: string | null) {
+  const order = await row<OrderRow>('SELECT * FROM orders WHERE id = ?', orderId);
   if (!order) throw new Error('Order not found');
   if (order.payment_status === 'PAID') return orderPublicShape(order); // idempotent
 
@@ -73,7 +73,7 @@ export function markOrderPaid(orderId: number, provider: string, providerReferen
   }
 
   const ts = now();
-  run(
+  await run(
     `INSERT INTO payments (order_id, provider, provider_reference, amount_cents, currency, status)
      VALUES (?, ?, ?, ?, ?, 'SUCCEEDED')`,
     orderId,
@@ -82,14 +82,14 @@ export function markOrderPaid(orderId: number, provider: string, providerReferen
     order.total_cents,
     order.currency
   );
-  run(
+  await run(
     `UPDATE orders SET payment_status = 'PAID', order_status = 'PAID', updated_at = ? WHERE id = ?`,
     ts,
     orderId
   );
-  recordStatusHistory(orderId, order.order_status, 'PAID', `payment:${provider}`);
+  await recordStatusHistory(orderId, order.order_status, 'PAID', `payment:${provider}`);
 
-  const updated = row<OrderRow>('SELECT * FROM orders WHERE id = ?', orderId)!;
+  const updated = (await row<OrderRow>('SELECT * FROM orders WHERE id = ?', orderId))!;
   broadcastOrderUpdate(updated);
   // Fire-and-forget push (subscriptions usually don't exist yet at payment time,
   // but a returning customer may already be subscribed).
@@ -98,11 +98,12 @@ export function markOrderPaid(orderId: number, provider: string, providerReferen
   );
   // Free payment-confirmation email (order updates).
   if (updated.customer_email) {
-    const restaurant =
-      row<{ name: string }>(
+    const restaurant = (
+      await row<{ name: string }>(
         'SELECT org.name AS name FROM organizations org JOIN orders o ON o.org_id = org.id WHERE o.id = ?',
         orderId
-      )?.name || '';
+      )
+    )?.name || '';
     const amount = (updated.total_cents / 100).toFixed(2);
     sendEmail(
       updated.customer_email,
@@ -117,21 +118,21 @@ export function markOrderPaid(orderId: number, provider: string, providerReferen
 /** Create a Stripe Checkout Session for an unpaid order. Returns the hosted URL. */
 export async function createCheckoutSession(orderId: number): Promise<string> {
   if (!stripe) throw new Error('Stripe is not configured');
-  const order = row<OrderRow & { customer_name: string | null }>(
+  const order = await row<OrderRow & { customer_name: string | null }>(
     'SELECT * FROM orders WHERE id = ?',
     orderId
   );
   if (!order) throw new Error('Order not found');
   if (order.payment_status === 'PAID') throw new Error('Order is already paid');
 
-  const items = row<{ names: string }>(
+  const items = await row<{ names: string }>(
     `SELECT GROUP_CONCAT(item_name || ' x' || quantity, ', ') AS names FROM order_items WHERE order_id = ?`,
     orderId
   );
   const baseUrl = (process.env.PUBLIC_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 
   // Drop superseded pending sessions so a retry doesn't stack duplicates.
-  run(`DELETE FROM payments WHERE order_id = ? AND provider = 'stripe' AND status = 'PENDING'`, orderId);
+  await run(`DELETE FROM payments WHERE order_id = ? AND provider = 'stripe' AND status = 'PENDING'`, orderId);
 
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
@@ -150,7 +151,7 @@ export async function createCheckoutSession(orderId: number): Promise<string> {
     cancel_url: `${baseUrl}/staff/orders/${orderId}?cancelled=1`,
   });
 
-  run(
+  await run(
     `INSERT INTO payments (order_id, provider, provider_reference, amount_cents, currency, status)
      VALUES (?, ?, ?, ?, ?, 'PENDING')`,
     orderId,
@@ -177,14 +178,14 @@ export async function handleStripeWebhook(rawBody: Buffer, signature: string): P
       return true;
     }
     // Idempotency: Stripe may redeliver; markOrderPaid is safe to call twice.
-    const existing = row(
+    const existing = await row(
       'SELECT id FROM payments WHERE provider_reference = ? AND status = ?',
       session.id,
       'SUCCEEDED'
     );
     if (!existing) {
-      run('UPDATE payments SET status = ? WHERE provider_reference = ?', 'SUCCEEDED', session.id);
-      markOrderPaid(orderId, 'stripe', session.payment_intent as string);
+      await run('UPDATE payments SET status = ? WHERE provider_reference = ?', 'SUCCEEDED', session.id);
+      await markOrderPaid(orderId, 'stripe', session.payment_intent as string);
     }
     return true;
   }
@@ -192,7 +193,7 @@ export async function handleStripeWebhook(rawBody: Buffer, signature: string): P
   if (event.type === 'checkout.session.expired' || event.type === 'payment_intent.payment_failed') {
     const obj: any = event.data.object;
     const ref = obj.id as string;
-    run('UPDATE payments SET status = ? WHERE provider_reference = ?', 'FAILED', ref);
+    await run('UPDATE payments SET status = ? WHERE provider_reference = ?', 'FAILED', ref);
     return true;
   }
 
