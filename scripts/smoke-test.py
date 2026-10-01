@@ -373,6 +373,7 @@ check("check-in goes straight to tracking", "renderConfirmed" not in _src and "Y
 check("check-in navigates to /wait/<token>", "go(`/wait/${encodeURIComponent(data.public_token)}`)" in _src)
 check("topbar uses old-style nav buttons", "nav-btn" in _src and "nav-pill" not in _src)
 check("waitlist nav has count badge", all(x in _src for x in ("nav-waitlist-count", "nav-badge", "active_count")))
+check("temp quick test login is gated", "quick-login-btn" in _src and "get('test') === '1'" in _src)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

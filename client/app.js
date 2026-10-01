@@ -518,6 +518,35 @@ function LoginPage() {
     }
   });
 
+  // TEMPORARY testing shortcut (remove when testing is done): visiting
+  // /login?test=1 shows a one-tap admin login so testing doesn't need
+  // typing credentials every time. Hidden on the normal login page.
+  if (new URLSearchParams(location.search).get('test') === '1') {
+    const q = document.createElement('button');
+    q.className = 'btn secondary block';
+    q.id = 'quick-login-btn';
+    q.style.marginTop = '10px';
+    q.textContent = '⚡ Quick test login (admin)';
+    loginForm.after(q);
+    q.addEventListener('click', async () => {
+      q.disabled = true;
+      q.innerHTML = '<span class="spinner"></span> Signing in…';
+      hideErr();
+      try {
+        const data = await api('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ username: 'admin', password: 'admin123' }),
+        });
+        saveSession(data.token, data.user);
+        go('/staff');
+      } catch (err) {
+        showErr(err.message);
+        q.disabled = false;
+        q.textContent = '⚡ Quick test login (admin)';
+      }
+    });
+  }
+
   const signupBtn = document.getElementById('signup-btn');
   signupForm.addEventListener('submit', async (e) => {
     e.preventDefault();
