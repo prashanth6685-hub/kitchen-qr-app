@@ -53,7 +53,7 @@ app.post('/api/auth/login', (req, res) => {
   }
   const user = row<StaffUser & { password_hash: string }>(
     `SELECT u.id, u.username, u.role, u.org_id, o.name AS org_name, u.password_hash
-     FROM users u LEFT JOIN organizations o ON o.id = u.org_id WHERE u.username = ?`,
+     FROM users u LEFT JOIN organizations o ON o.id = u.org_id WHERE u.username = ? COLLATE NOCASE`,
     String(username)
   );
   if (!user || !verifyPassword(String(password), user.password_hash)) {
@@ -89,7 +89,7 @@ app.post('/api/auth/signup', (req, res) => {
   if (!restaurantName) {
     return res.status(400).json({ error: 'Please enter your restaurant or company name.' });
   }
-  if (row('SELECT id FROM users WHERE username = ?', username)) {
+  if (row('SELECT id FROM users WHERE username = ? COLLATE NOCASE', username)) {
     return res.status(409).json({ error: 'That username is already taken.' });
   }
   const org = run('INSERT INTO organizations (name) VALUES (?)', restaurantName);
