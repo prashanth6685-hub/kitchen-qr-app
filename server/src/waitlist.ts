@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { all, row, run, now, db } from './db.js';
+import { all, row, run, now, withTransaction } from './db.js';
 import { AuthRequest, requireAuth, requireRole } from './auth.js';
 import {
   generatePublicToken,
@@ -83,37 +83,37 @@ function clientIp(req: any): string {
 }
 
 // ---------- Lookups & derived data ----------
-function locationById(id: number): LocationRow | undefined {
-  return row<LocationRow>('SELECT * FROM locations WHERE id = ?', id);
+async function locationById(id: number): Promise<LocationRow | undefined> {  return await row<LocationRow>('SELECT * FROM locations WHERE id = ?', id);
 }
-function locationBySlug(slug: string): LocationRow | undefined {
-  return row<LocationRow>('SELECT * FROM locations WHERE slug = ?', slug);
+async function locationBySlug(slug: string): Promise<LocationRow | undefined> {
+  return await row<LocationRow>('SELECT * FROM locations WHERE slug = ?', slug);
 }
-function restaurantNameFor(locationId: number): string {
-  const r = row<{ name: string }>(
+async function restaurantNameFor(locationId: number): Promise<string> {
+  const r = await row<{ name: string }>(
     `SELECT o.name AS name FROM organizations o
      JOIN locations l ON l.org_id = o.id WHERE l.id = ?`,
     locationId
   );
   return r?.name || 'Restaurant';
 }
-function partiesAhead(locationId: number, queueSeq: number): number {
-  return row<{ c: number }>(
+async function partiesAhead(locationId: number, queueSeq: number): Promise<number> {
+  const r = await row<{ c: number }>(
     `SELECT COUNT(*) AS c FROM waitlist_entries
      WHERE location_id = ? AND queue_seq < ? AND ${AHEAD_STATUSES}`,
     locationId,
     queueSeq
-  )!.c;
+  );
+  return r?.c ?? 0;
 }
-function currentlyServing(locationId: number): string | null {
+async function currentlyServing(locationId: number): Promise<string | null> {
   const r =
-    row<{ queue_number: string }>(
+    await row<{ queue_number: string }>(
       `SELECT queue_number FROM waitlist_entries
        WHERE location_id = ? AND status = 'CALLED'
        ORDER BY called_time DESC, queue_seq DESC LIMIT 1`,
       locationId
     ) ||
-    row<{ queue_number: string }>(
+    await row<{ queue_number: string }>(
       `SELECT queue_number FROM waitlist_entries
        WHERE location_id = ? AND status = 'ALMOST_READY'
        ORDER BY updated_at DESC, queue_seq DESC LIMIT 1`,
@@ -128,8 +128,8 @@ function waitEstimate(locationId: number, avgMinutes: number, parties: number) {
   return { estimated_wait_min: est, estimated_wait_label: label };
 }
 
-function publicEntryJson(e: EntryRow, loc: LocationRow) {
-  const ahead = partiesAhead(e.location_id, e.queue_seq);
+async function publicEntryJson(e: EntryRow, loc: LocationRow) {
+  const ahead = await partiesAhead(e.location_id, e.queue_seq);
   const { estimated_wait_min, estimated_wait_label } = waitEstimate(
     e.location_id,
     loc.avg_party_minutes,
@@ -146,10 +146,10 @@ function publicEntryJson(e: EntryRow, loc: LocationRow) {
     status: e.status,
     position: ahead + 1,
     parties_ahead: ahead,
-    currently_serving: currentlyServing(e.location_id),
+    currently_serving: await currentlyServing(e.location_id),
     estimated_wait_min,
     estimated_wait_label,
-    restaurant_name: restaurantNameFor(e.location_id),
+    restaurant_name: await restaurantNameFor(e.location_id),
     location_name: loc.name,
     location_slug: loc.slug,
     check_in_time: e.check_in_time,
@@ -185,37 +185,32 @@ function adminEntryJson(e: EntryRow) {
 }
 
 /** Atomic per-location, per-day queue sequence (safe under concurrent check-ins). */
-function nextQueueSeq(locationId: number): number {
+async function nextQueueSeq(locationId: number): Promise<number> {
   const day = new Date().toISOString().slice(0, 10); // UTC day
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const cur = row<{ last_number: number }>(
+  return withTransaction(async (tx) => {
+    const cur = await tx.row<{ last_number: number }>(
       'SELECT last_number FROM waitlist_sequences WHERE location_id = ? AND day = ?',
       locationId,
       day
     );
     const next = (cur?.last_number ?? 0) + 1;
     if (cur) {
-      run('UPDATE waitlist_sequences SET last_number = ? WHERE location_id = ? AND day = ?', next, locationId, day);
+      await tx.run('UPDATE waitlist_sequences SET last_number = ? WHERE location_id = ? AND day = ?', next, locationId, day);
     } else {
-      run('INSERT INTO waitlist_sequences (location_id, day, last_number) VALUES (?, ?, ?)', locationId, day, next);
+      await tx.run('INSERT INTO waitlist_sequences (location_id, day, last_number) VALUES (?, ?, ?)', locationId, day, next);
     }
-    db.exec('COMMIT');
     return next;
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+  });
 }
 
-function logQueueEvent(
+async function logQueueEvent(
   entryId: number,
   eventType: string,
   oldStatus: string | null,
   newStatus: string | null,
   performedBy: string
 ) {
-  run(
+  await run(
     'INSERT INTO queue_events (waitlist_entry_id, event_type, old_status, new_status, performed_by) VALUES (?, ?, ?, ?, ?)',
     entryId,
     eventType,
@@ -237,13 +232,13 @@ class HttpError extends Error {
  * Move an entry to a new status: validates the transition, records the event,
  * broadcasts the live update, and fires the push notification (fire-and-forget).
  */
-function doTransition(
+async function doTransition(
   entryId: number,
   newStatus: string,
   performedBy: string,
   eventType: string
-): EntryRow {
-  const entry = row<EntryRow>('SELECT * FROM waitlist_entries WHERE id = ?', entryId);
+): Promise<EntryRow> {
+  const entry = await row<EntryRow>('SELECT * FROM waitlist_entries WHERE id = ?', entryId);
   if (!entry) throw new HttpError(404, 'Waitlist entry not found');
   const allowed = TRANSITIONS[entry.status] || [];
   if (!allowed.includes(newStatus)) {
@@ -269,22 +264,22 @@ function doTransition(
     sets.push('notified_almost_ready = 0', 'notified_called = 0');
   }
   params.push(entry.id);
-  run(`UPDATE waitlist_entries SET ${sets.join(', ')} WHERE id = ?`, ...params);
-  logQueueEvent(entry.id, eventType, entry.status, newStatus, performedBy);
-  const updated = row<EntryRow>('SELECT * FROM waitlist_entries WHERE id = ?', entry.id)!;
-  const loc = locationById(updated.location_id)!;
-  broadcastWaitlistUpdate(updated.public_token, updated.location_id, publicEntryJson(updated, loc));
+  await run(`UPDATE waitlist_entries SET ${sets.join(', ')} WHERE id = ?`, ...params);
+  await logQueueEvent(entry.id, eventType, entry.status, newStatus, performedBy);
+  const updated = (await row<EntryRow>('SELECT * FROM waitlist_entries WHERE id = ?', entry.id))!;
+  const loc = (await locationById(updated.location_id))!;
+  broadcastWaitlistUpdate(updated.public_token, updated.location_id, await publicEntryJson(updated, loc));
   const notifyStatus = eventType === 'RECALLED' ? 'RECALLED' : newStatus;
   notifyWaitlistStatus(
     updated.id,
     updated.queue_number,
     notifyStatus,
     updated.public_token,
-    restaurantNameFor(updated.location_id)
+    await restaurantNameFor(updated.location_id)
   ).catch((e) => console.error('[waitlist] push notify failed', e?.message));
   // Free channels: email + carrier-gateway SMS on CALLED.
   if (newStatus === 'CALLED') {
-    const restaurant = restaurantNameFor(updated.location_id);
+    const restaurant = await restaurantNameFor(updated.location_id);
     notifyContact(
       { email: updated.customer_email, phone: updated.customer_phone, carrier: updated.customer_carrier },
       `${restaurant}: Your table is ready!`,
@@ -295,11 +290,11 @@ function doTransition(
   return updated;
 }
 
-function resolveLocation(slug?: unknown, locationId?: unknown): LocationRow {
+async function resolveLocation(slug?: unknown, locationId?: unknown): Promise<LocationRow> {
   let loc: LocationRow | undefined;
-  if (typeof slug === 'string' && slug.trim()) loc = locationBySlug(slug.trim());
+  if (typeof slug === 'string' && slug.trim()) loc = await locationBySlug(slug.trim());
   else if (locationId !== undefined && locationId !== null && String(locationId).trim() !== '') {
-    loc = locationById(Number(locationId));
+    loc = await locationById(Number(locationId));
   }
   if (!loc) throw new HttpError(404, 'Restaurant location not found');
   if (!loc.waitlist_enabled) throw new HttpError(400, 'The waiting list is not enabled for this location');
@@ -307,13 +302,13 @@ function resolveLocation(slug?: unknown, locationId?: unknown): LocationRow {
 }
 
 // ---------- Public: check-in ----------
-waitlistRouter.post('/check-in', (req, res) => {
+waitlistRouter.post('/check-in', async (req, res) => {
   try {
     if (!rateLimited(`checkin:${clientIp(req)}`, 10, 10 * 60 * 1000)) {
       return res.status(429).json({ error: 'Too many check-ins. Please wait a few minutes and try again.' });
     }
     const { slug, location_id, customer_name, party_size, customer_phone, customer_email, customer_carrier, special_requirements } = req.body ?? {};
-    const loc = resolveLocation(slug, location_id);
+    const loc = await resolveLocation(slug, location_id);
 
     const name = String(customer_name || '').trim().slice(0, 120);
     if (!name) return res.status(400).json({ error: 'Please enter your name' });
@@ -328,7 +323,7 @@ waitlistRouter.post('/check-in', (req, res) => {
 
     // Duplicate protection: same phone + already waiting -> return the existing entry.
     if (phone) {
-      const existing = row<EntryRow>(
+      const existing = await row<EntryRow>(
         `SELECT * FROM waitlist_entries
          WHERE location_id = ? AND customer_phone = ? AND ${ACTIVE_STATUSES}
          ORDER BY queue_seq LIMIT 1`,
@@ -340,12 +335,12 @@ waitlistRouter.post('/check-in', (req, res) => {
       }
     }
 
-    const seq = nextQueueSeq(loc.id);
+    const seq = await nextQueueSeq(loc.id);
     const prefix = String(loc.waitlist_prefix || '').trim().slice(0, 4);
     const queueNumber = `${prefix}${seq}`;
     const token = generatePublicToken();
     const ts = now();
-    const insert = run(
+    const insert = await run(
       `INSERT INTO waitlist_entries
         (public_token, location_id, queue_seq, queue_number, customer_name, customer_phone,
          customer_email, customer_carrier, party_size, special_requirements, status, check_in_time, created_at, updated_at)
@@ -364,10 +359,10 @@ waitlistRouter.post('/check-in', (req, res) => {
       ts,
       ts
     );
-    const entry = row<EntryRow>('SELECT * FROM waitlist_entries WHERE id = ?', Number(insert.lastInsertRowid))!;
-    logQueueEvent(entry.id, 'CHECKED_IN', null, 'WAITING', 'customer');
-    broadcastWaitlistUpdate(entry.public_token, entry.location_id, publicEntryJson(entry, loc));
-    res.status(201).json(publicEntryJson(entry, loc));
+    const entry = (await row<EntryRow>('SELECT * FROM waitlist_entries WHERE id = ?', Number(insert.lastInsertRowid)))!;
+    await logQueueEvent(entry.id, 'CHECKED_IN', null, 'WAITING', 'customer');
+    broadcastWaitlistUpdate(entry.public_token, entry.location_id, await publicEntryJson(entry, loc));
+    res.status(201).json(await publicEntryJson(entry, loc));
   } catch (e: any) {
     if (e instanceof HttpError) return res.status(e.code).json({ error: e.message });
     console.error('[waitlist] check-in failed', e);
@@ -376,23 +371,24 @@ waitlistRouter.post('/check-in', (req, res) => {
 });
 
 // ---------- Public: location info ----------
-waitlistRouter.get('/location/:slug', (req, res) => {
-  const loc = locationBySlug(req.params.slug);
+waitlistRouter.get('/location/:slug', async (req, res) => {
+  const loc = await locationBySlug(req.params.slug);
   if (!loc) return res.status(404).json({ error: 'Restaurant location not found' });
-  const ahead = row<{ c: number }>(
+  const aheadRow = await row<{ c: number }>(
     `SELECT COUNT(*) AS c FROM waitlist_entries WHERE location_id = ? AND ${AHEAD_STATUSES}`,
     loc.id
-  )!.c;
+  );
+  const ahead = aheadRow?.c ?? 0;
   const { estimated_wait_min, estimated_wait_label } = waitEstimate(loc.id, loc.avg_party_minutes, ahead);
   res.json({
     id: loc.id,
     name: loc.name,
     slug: loc.slug,
-    restaurant_name: restaurantNameFor(loc.id),
+    restaurant_name: await restaurantNameFor(loc.id),
     waitlist_enabled: Boolean(loc.waitlist_enabled),
     queue_length: ahead,
     parties_waiting: ahead,
-    currently_serving: currentlyServing(loc.id),
+    currently_serving: await currentlyServing(loc.id),
     estimated_wait_min,
     estimated_wait_label,
     queue_prefix: loc.waitlist_prefix,
@@ -402,7 +398,7 @@ waitlistRouter.get('/location/:slug', (req, res) => {
 
 // ---------- Public: permanent restaurant QR (encodes the check-in URL) ----------
 waitlistRouter.get('/location/:slug/qr.png', async (req, res) => {
-  const loc = locationBySlug(req.params.slug);
+  const loc = await locationBySlug(req.params.slug);
   if (!loc) return res.status(404).json({ error: 'Restaurant location not found' });
   try {
     const buf = await qrPngBufferForUrl(checkinUrl(loc.slug || String(loc.id)));
@@ -415,27 +411,27 @@ waitlistRouter.get('/location/:slug/qr.png', async (req, res) => {
 });
 
 // ---------- Public: entry lookup ----------
-waitlistRouter.get('/token/:token', (req, res) => {
-  const entry = row<EntryRow>('SELECT * FROM waitlist_entries WHERE public_token = ?', req.params.token);
+waitlistRouter.get('/token/:token', async (req, res) => {
+  const entry = await row<EntryRow>('SELECT * FROM waitlist_entries WHERE public_token = ?', req.params.token);
   if (!entry) return res.status(404).json({ error: 'This waitlist link is invalid or expired.' });
-  const loc = locationById(entry.location_id)!;
-  res.json(publicEntryJson(entry, loc));
+  const loc = (await locationById(entry.location_id))!;
+  res.json(await publicEntryJson(entry, loc));
 });
 
 // ---------- Public: live updates for the customer page ----------
-waitlistRouter.get('/token/:token/events', (req, res) => {
-  const entry = row<EntryRow>('SELECT * FROM waitlist_entries WHERE public_token = ?', req.params.token);
+waitlistRouter.get('/token/:token/events', async (req, res) => {
+  const entry = await row<EntryRow>('SELECT * FROM waitlist_entries WHERE public_token = ?', req.params.token);
   if (!entry) return res.status(404).end();
-  const loc = locationById(entry.location_id)!;
+  const loc = (await locationById(entry.location_id))!;
   sseInit(res);
   subscribeToken(entry.public_token, res);
-  sseSend(res, 'waitlist', publicEntryJson(entry, loc));
+  sseSend(res, 'waitlist', await publicEntryJson(entry, loc));
   req.on('close', () => unsubscribeToken(entry.public_token, res));
 });
 
 // ---------- Public: customer QR (encodes the tracking URL) ----------
 waitlistRouter.get('/token/:token/qr.png', async (req, res) => {
-  const entry = row<EntryRow>('SELECT * FROM waitlist_entries WHERE public_token = ?', req.params.token);
+  const entry = await row<EntryRow>('SELECT * FROM waitlist_entries WHERE public_token = ?', req.params.token);
   if (!entry) return res.status(404).json({ error: 'This waitlist link is invalid or expired.' });
   try {
     const buf = await qrPngBufferForUrl(waitlistTrackingUrl(entry.public_token));
@@ -448,11 +444,11 @@ waitlistRouter.get('/token/:token/qr.png', async (req, res) => {
 });
 
 // ---------- Public: customer cancels their own wait ----------
-waitlistRouter.post('/token/:token/cancel', (req, res) => {
-  const entry = row<EntryRow>('SELECT * FROM waitlist_entries WHERE public_token = ?', req.params.token);
+waitlistRouter.post('/token/:token/cancel', async (req, res) => {
+  const entry = await row<EntryRow>('SELECT * FROM waitlist_entries WHERE public_token = ?', req.params.token);
   if (!entry) return res.status(404).json({ error: 'This waitlist link is invalid or expired.' });
   try {
-    const updated = doTransition(entry.id, 'CANCELLED', 'customer', 'CANCELLED');
+    const updated = await doTransition(entry.id, 'CANCELLED', 'customer', 'CANCELLED');
     res.json({ ok: true, status: updated.status });
   } catch (e: any) {
     if (e instanceof HttpError) return res.status(e.code).json({ error: e.message });
@@ -461,7 +457,7 @@ waitlistRouter.post('/token/:token/cancel', (req, res) => {
 });
 
 // ---------- Public: web-push subscription for a waitlist entry ----------
-waitlistRouter.post('/notifications/subscribe', (req, res) => {
+waitlistRouter.post('/notifications/subscribe', async (req, res) => {
   if (!rateLimited(`wlsub:${clientIp(req)}`, 20, 10 * 60 * 1000)) {
     return res.status(429).json({ error: 'Too many requests. Please try again later.' });
   }
@@ -469,38 +465,41 @@ waitlistRouter.post('/notifications/subscribe', (req, res) => {
   if (!token || !subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
     return res.status(400).json({ error: 'Invalid subscription' });
   }
-  const entry = row<EntryRow>('SELECT id FROM waitlist_entries WHERE public_token = ?', token);
+  const entry = await row<EntryRow>('SELECT id FROM waitlist_entries WHERE public_token = ?', token);
   if (!entry) return res.status(404).json({ error: 'Waitlist entry not found' });
-  saveWaitlistSubscription(entry.id, subscription, device_type);
+  await saveWaitlistSubscription(entry.id, subscription, device_type);
   res.json({ ok: true });
 });
 
 // ---------- Staff: locations ----------
-waitlistRouter.get('/admin/locations', requireAuth, (req: AuthRequest, res) => {
+waitlistRouter.get('/admin/locations', requireAuth, async (req: AuthRequest, res) => {
   const orgId = req.user!.org_id;
-  const locs = (
-    orgId
-      ? all<LocationRow>('SELECT * FROM locations WHERE org_id = ? ORDER BY id', orgId)
-      : all<LocationRow>('SELECT * FROM locations ORDER BY id')
-  ).map((l) => ({
-    id: l.id,
-    name: l.name,
-    slug: l.slug,
-    restaurant_name: restaurantNameFor(l.id),
-    waitlist_enabled: Boolean(l.waitlist_enabled),
-    queue_prefix: l.waitlist_prefix,
-    checkin_url: checkinUrl(l.slug || String(l.id)),
-    active_count:
-      row<{ c: number }>(
-        `SELECT COUNT(*) AS c FROM waitlist_entries WHERE location_id = ? AND ${ACTIVE_STATUSES}`,
-        l.id
+  const locs = await Promise.all(
+    (
+      orgId
+        ? await all<LocationRow>('SELECT * FROM locations WHERE org_id = ? ORDER BY id', orgId)
+        : await all<LocationRow>('SELECT * FROM locations ORDER BY id')
+    ).map(async (l) => ({
+      id: l.id,
+      name: l.name,
+      slug: l.slug,
+      restaurant_name: await restaurantNameFor(l.id),
+      waitlist_enabled: Boolean(l.waitlist_enabled),
+      queue_prefix: l.waitlist_prefix,
+      checkin_url: checkinUrl(l.slug || String(l.id)),
+      active_count: (
+        await row<{ c: number }>(
+          `SELECT COUNT(*) AS c FROM waitlist_entries WHERE location_id = ? AND ${ACTIVE_STATUSES}`,
+          l.id
+        )
       )!.c,
-  }));
+    }))
+  );
   res.json(locs);
 });
 
 // ---------- Staff: entries ----------
-waitlistRouter.get('/admin/entries', requireAuth, (req: AuthRequest, res) => {
+waitlistRouter.get('/admin/entries', requireAuth, async (req: AuthRequest, res) => {
   const locationId = Number(req.query.location_id);
   if (!Number.isFinite(locationId)) return res.status(400).json({ error: 'location_id is required' });
   const status = String(req.query.status || 'active');
@@ -517,18 +516,20 @@ waitlistRouter.get('/admin/entries', requireAuth, (req: AuthRequest, res) => {
   } else {
     return res.status(400).json({ error: 'Invalid status filter' });
   }
-  const entries = all<EntryRow>(
-    `SELECT * FROM waitlist_entries WHERE ${where} ${order}`,
-    ...params
+  const entries = (
+    await all<EntryRow>(
+      `SELECT * FROM waitlist_entries WHERE ${where} ${order}`,
+      ...params
+    )
   ).map(adminEntryJson);
   res.json(entries);
 });
 
 // ---------- Staff: dashboard summary ----------
-waitlistRouter.get('/admin/summary', requireAuth, (req: AuthRequest, res) => {
+waitlistRouter.get('/admin/summary', requireAuth, async (req: AuthRequest, res) => {
   const locationId = Number(req.query.location_id);
   if (!Number.isFinite(locationId)) return res.status(400).json({ error: 'location_id is required' });
-  const entries = all<EntryRow>(
+  const entries = await all<EntryRow>(
     `SELECT * FROM waitlist_entries WHERE location_id = ? AND ${ACTIVE_STATUSES} ORDER BY queue_seq`,
     locationId
   );
@@ -536,7 +537,7 @@ waitlistRouter.get('/admin/summary', requireAuth, (req: AuthRequest, res) => {
   for (const e of entries) if (e.status === 'WAITING' || e.status === 'CALLED') counts[e.status]++;
   res.json({
     location_id: locationId,
-    now_serving: currentlyServing(locationId),
+    now_serving: await currentlyServing(locationId),
     next_up: entries.filter((e) => e.status === 'WAITING').slice(0, 3).map((e) => e.queue_number),
     counts,
     entries: entries.map(adminEntryJson),
@@ -544,7 +545,7 @@ waitlistRouter.get('/admin/summary', requireAuth, (req: AuthRequest, res) => {
 });
 
 // ---------- Staff: live feed for dashboards ----------
-waitlistRouter.get('/admin/events', requireAuth, (req: AuthRequest, res) => {
+waitlistRouter.get('/admin/events', requireAuth, async (req: AuthRequest, res) => {
   const locationId = Number(req.query.location_id);
   if (!Number.isFinite(locationId)) return res.status(400).end();
   sseInit(res);
@@ -556,10 +557,10 @@ waitlistRouter.get('/admin/events', requireAuth, (req: AuthRequest, res) => {
 // ---------- Staff: call next (oldest WAITING -> CALLED) ----------
 const staffWrite = [requireAuth, requireRole('ADMIN')];
 
-waitlistRouter.post('/admin/call-next', ...staffWrite, (req: AuthRequest, res) => {
+waitlistRouter.post('/admin/call-next', ...staffWrite, async (req: AuthRequest, res) => {
   const locationId = Number(req.body?.location_id);
   if (!Number.isFinite(locationId)) return res.status(400).json({ error: 'location_id is required' });
-  const next = row<EntryRow>(
+  const next = await row<EntryRow>(
     `SELECT * FROM waitlist_entries
      WHERE location_id = ? AND status = 'WAITING'
      ORDER BY queue_seq LIMIT 1`,
@@ -567,7 +568,7 @@ waitlistRouter.post('/admin/call-next', ...staffWrite, (req: AuthRequest, res) =
   );
   if (!next) return res.status(404).json({ error: 'No waiting customers' });
   try {
-    const updated = doTransition(next.id, 'CALLED', req.user!.username, 'CALLED');
+    const updated = await doTransition(next.id, 'CALLED', req.user!.username, 'CALLED');
     res.json({ id: updated.id, queue_number: updated.queue_number, status: updated.status, updated_at: updated.updated_at });
   } catch (e: any) {
     if (e instanceof HttpError) return res.status(e.code).json({ error: e.message });
@@ -576,39 +577,39 @@ waitlistRouter.post('/admin/call-next', ...staffWrite, (req: AuthRequest, res) =
 });
 
 // ---------- Staff: per-entry actions ----------
-function staffAction(path: string, newStatus: string | null, eventType: string) {
+async function staffAction(path: string, newStatus: string | null, eventType: string) {
   // Note: registered after all /admin/* and /token/* routes so ':id' never
   // shadows them.
-  waitlistRouter.post(`/:id${path}`, ...staffWrite, (req: AuthRequest, res) => {
+  waitlistRouter.post(`/:id${path}`, ...staffWrite, async (req: AuthRequest, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid entry id' });
     try {
       if (newStatus === null) {
         // RECALL: re-notify without changing status.
-        const entry = row<EntryRow>('SELECT * FROM waitlist_entries WHERE id = ?', id);
+        const entry = await row<EntryRow>('SELECT * FROM waitlist_entries WHERE id = ?', id);
         if (!entry) return res.status(404).json({ error: 'Waitlist entry not found' });
         if (entry.status !== 'CALLED') {
           return res.status(409).json({ error: 'Only a called entry can be recalled' });
         }
         const ts = now();
-        run('UPDATE waitlist_entries SET recall_count = recall_count + 1, updated_at = ? WHERE id = ?', ts, id);
-        logQueueEvent(id, 'RECALLED', 'CALLED', 'CALLED', req.user!.username);
-        const updated = row<EntryRow>('SELECT * FROM waitlist_entries WHERE id = ?', id)!;
-        const loc = locationById(updated.location_id)!;
-        broadcastWaitlistUpdate(updated.public_token, updated.location_id, publicEntryJson(updated, loc));
+        await run('UPDATE waitlist_entries SET recall_count = recall_count + 1, updated_at = ? WHERE id = ?', ts, id);
+        await logQueueEvent(id, 'RECALLED', 'CALLED', 'CALLED', req.user!.username);
+        const updated = (await row<EntryRow>('SELECT * FROM waitlist_entries WHERE id = ?', id))!;
+        const loc = (await locationById(updated.location_id))!;
+        broadcastWaitlistUpdate(updated.public_token, updated.location_id, await publicEntryJson(updated, loc));
         notifyWaitlistStatus(
           updated.id,
           updated.queue_number,
           'RECALLED',
           updated.public_token,
-          restaurantNameFor(updated.location_id)
+          await restaurantNameFor(updated.location_id)
         ).catch((e) => console.error('[waitlist] push notify failed', e?.message));
         // Free reminder on recall: email + carrier-gateway SMS.
         notifyContact(
           { email: updated.customer_email, phone: updated.customer_phone, carrier: updated.customer_carrier },
-          `${restaurantNameFor(updated.location_id)}: Reminder — your table is ready`,
-          `Hi${updated.customer_name ? ' ' + updated.customer_name : ''} — reminder: your table at ${restaurantNameFor(updated.location_id)} is ready. Please proceed to the host stand. (Queue number ${updated.queue_number})`,
-          `${restaurantNameFor(updated.location_id)}: Reminder — your table is ready! Queue number ${updated.queue_number}.`
+          `${await restaurantNameFor(updated.location_id)}: Reminder — your table is ready`,
+          `Hi${updated.customer_name ? ' ' + updated.customer_name : ''} — reminder: your table at ${await restaurantNameFor(updated.location_id)} is ready. Please proceed to the host stand. (Queue number ${updated.queue_number})`,
+          `${await restaurantNameFor(updated.location_id)}: Reminder — your table is ready! Queue number ${updated.queue_number}.`
         ).catch((e) => console.error('[waitlist] email notify failed', e?.message));
         return res.json({
           id: updated.id,
@@ -618,7 +619,7 @@ function staffAction(path: string, newStatus: string | null, eventType: string) 
           updated_at: ts,
         });
       }
-      const updated = doTransition(id, newStatus, req.user!.username, eventType);
+      const updated = await doTransition(id, newStatus, req.user!.username, eventType);
       res.json({
         id: updated.id,
         queue_number: updated.queue_number,
