@@ -37,7 +37,7 @@ export interface AuthRequest extends Request {
   user?: StaffUser;
 }
 
-export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
+export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const header = req.headers.authorization || '';
   let token = header.startsWith('Bearer ') ? header.slice(7) : null;
   // Allow ?token= for EventSource (SSE) connections, which can't set headers.
@@ -47,7 +47,7 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
   if (!token) return res.status(401).json({ error: 'Authentication required' });
   try {
     const payload = jwt.verify(token, JWT_SECRET) as any;
-    const user = row<StaffUser>(
+    const user = await row<StaffUser>(
       `SELECT u.id, u.username, u.role, u.org_id, o.name AS org_name, u.email, u.phone
        FROM users u LEFT JOIN organizations o ON o.id = u.org_id WHERE u.id = ?`,
       payload.sub
