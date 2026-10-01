@@ -142,9 +142,11 @@ s, d = req("GET", "/api/orders/token/deadbeefdeadbeefdeadbeefdeadbeef")
 check("bad token 404s", s == 404, f"got {s}")
 
 print("== status pipeline ==")
-for st in ["RECEIVED", "PREPARING", "READY", "COMPLETED"]:
+for st in ["RECEIVED", "PREPARING", "COMPLETED"]:
     s, d = req("PATCH", f"/api/orders/{oid}/status", token=kitchen_tok, body={"status": st})
     check(f"kitchen -> {st}", s == 200 and d["order_status"] == st, f"got {s} {d}")
+s, d = req("PATCH", f"/api/orders/{oid}/status", token=kitchen_tok, body={"status": "READY"})
+check("READY no longer a valid status from terminal", s == 400 or s == 409, f"got {s}")
 s, d = req("PATCH", f"/api/orders/{oid}/status", token=kitchen_tok, body={"status": "CANCELLED"})
 check("kitchen cannot cancel", s == 403, f"got {s}")
 s, d = req("PATCH", f"/api/orders/{oid}/status", token=counter_tok, body={"status": "PREPARING"})
@@ -180,7 +182,7 @@ s, d = req("GET", "/api/orders?status=COMPLETED", token=counter_tok)
 check("filter by status", s == 200 and any(o["id"] == oid for o in d), f"got {s}")
 s, d = req("GET", f"/api/orders/{oid}", token=counter_tok)
 hist = [h["new_status"] for h in d["history"]]
-check("history recorded", hist == ["PENDING_PAYMENT","PAID","RECEIVED","PREPARING","READY","COMPLETED"], str(hist))
+check("history recorded", hist == ["PENDING_PAYMENT","PAID","RECEIVED","PREPARING","COMPLETED"], str(hist))
 check("tracking url present", d["tracking_url"].endswith(f"/order/{ptoken}"), d["tracking_url"])
 
 print("== push endpoints ==")
@@ -193,9 +195,11 @@ print("== partial completion ==")
 s, d = req("POST", "/api/orders", token=counter_tok, body={"items": [{"name": "Mango Lassi", "qty": 4, "unit_price": 449}]})
 oid3 = d["id"]
 s, d = req("POST", f"/api/orders/{oid3}/payments/demo", token=counter_tok)
-for st in ["RECEIVED", "PREPARING", "READY"]:
+for st in ["RECEIVED", "PREPARING"]:
     s, d = req("PATCH", f"/api/orders/{oid3}/status", token=kitchen_tok, body={"status": st})
-check("order at READY", s == 200 and d["order_status"] == "READY", f"got {s} {d}")
+check("order at PREPARING", s == 200 and d["order_status"] == "PREPARING", f"got {s} {d}")
+s, d = req("PATCH", f"/api/orders/{oid3}/status", token=kitchen_tok, body={"status": "READY"})
+check("PREPARING -> READY rejected (ready step removed)", s == 409, f"got {s}")
 s, d = req("PATCH", f"/api/orders/{oid3}/status", token=kitchen_tok, body={"status": "PARTIALLY_COMPLETED"})
 check("kitchen -> PARTIALLY_COMPLETED", s == 200 and d["order_status"] == "PARTIALLY_COMPLETED", f"got {s} {d}")
 s, d = req("GET", "/api/orders?status=PARTIALLY_COMPLETED", token=counter_tok)
@@ -325,7 +329,7 @@ check("report order created", s == 201, f"got {s} {d}")
 oid5 = d["id"]
 s, d = req("POST", f"/api/orders/{oid5}/payments/demo", token=counter_tok)
 s, d = req("PATCH", f"/api/orders/{oid5}/discount", token=counter_tok, body={"discount_cents": 200})
-for st in ["RECEIVED", "PREPARING", "READY", "COMPLETED"]:
+for st in ["RECEIVED", "PREPARING", "COMPLETED"]:
     s, d = req("PATCH", f"/api/orders/{oid5}/status", token=kitchen_tok, body={"status": st})
 check("report order completed", s == 200 and d["order_status"] == "COMPLETED", f"got {s} {d}")
 s, d = req("GET", "/api/orders/report/summary", token=counter_tok)
@@ -458,6 +462,9 @@ check("customer timeline has no almost-ready step", "Almost your turn', 'Called'
 check("customer page shows recall count", "Reminder ${e.recall_count}" in _src and "you were reminded ${rc}" in _src)
 check("check-in has email + carrier fields", 'id="wl-email"' in _src and 'id="wl-carrier"' in _src)
 check("new order has email + carrier fields", 'id="cust-email"' in _src and 'id="cust-carrier"' in _src)
+check("kitchen page has no Mark Ready button", 'data-act="READY"' not in _src, "READY button still present")
+check("kitchen PREPARING offers partial + full finish", _src.count('data-act="PARTIALLY_COMPLETED"') >= 1 and _src.count('data-act="COMPLETED"') >= 1, "finish buttons missing")
+check("completed tracking shows READY hero", "'🟢 READY'" in _src, "missing ready hero")
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

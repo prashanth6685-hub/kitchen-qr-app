@@ -33,8 +33,8 @@ const TRANSITIONS: Record<string, string[]> = {
   PENDING_PAYMENT: ['PAID', 'CANCELLED'],
   PAID: ['RECEIVED', 'CANCELLED'],
   RECEIVED: ['PREPARING', 'CANCELLED'],
-  PREPARING: ['READY', 'CANCELLED'],
-  READY: ['PARTIALLY_COMPLETED', 'COMPLETED', 'CANCELLED'],
+  PREPARING: ['PARTIALLY_COMPLETED', 'COMPLETED', 'CANCELLED'],
+  READY: ['PARTIALLY_COMPLETED', 'COMPLETED', 'CANCELLED'], // legacy rows only — READY is no longer entered
   PARTIALLY_COMPLETED: ['COMPLETED', 'CANCELLED'],
   COMPLETED: [],
   CANCELLED: [],
@@ -514,14 +514,15 @@ ordersRouter.patch('/:id/status', (req: AuthRequest, res) => {
   notifyOrderStatus(order.id, updated.order_number, status, updated.public_token).catch((e) =>
     console.error('[orders] push notify failed', e)
   );
-  // Text the customer on READY / PARTIALLY_COMPLETED — the user-friendly
+  // Text the customer on COMPLETED / PARTIALLY_COMPLETED — the user-friendly
   // fallback for iPhones, where web push only works for Home-Screen-installed pages.
+  // (READY was removed from the flow — COMPLETED is now the pickup moment.)
   const restaurantName =
     row<{ name: string }>(
       'SELECT org.name AS name FROM organizations org JOIN orders o ON o.org_id = org.id WHERE o.id = ?',
       order.id
     )?.name || '';
-  if (status === 'READY') {
+  if (status === 'COMPLETED') {
     maybeSendReadySms(updated.order_number, updated.customer_phone, restaurantName);
     // Free channels: email + carrier-gateway SMS.
     notifyContact(

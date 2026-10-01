@@ -2235,7 +2235,8 @@ function KitchenDisplayPage() {
                       : o.order_status === 'RECEIVED'
                       ? `<button class="btn warn block" data-act="PREPARING" ${busyId === o.id ? 'disabled' : ''}>Start preparing</button>`
                       : o.order_status === 'PREPARING'
-                      ? `<button class="btn block" data-act="READY" ${busyId === o.id ? 'disabled' : ''}>✅ MARK READY</button>`
+                      ? `<button class="btn secondary block" data-act="PARTIALLY_COMPLETED" ${busyId === o.id ? 'disabled' : ''}>🟡 Partially complete</button>
+                         <button class="btn block" data-act="COMPLETED" ${busyId === o.id ? 'disabled' : ''} style="margin-top:8px">✅ Fully complete</button>`
                       : o.order_status === 'READY'
                       ? `<button class="btn secondary block" data-act="PARTIALLY_COMPLETED" ${busyId === o.id ? 'disabled' : ''}>🟡 Partially complete</button>
                          <button class="btn block" data-act="COMPLETED" ${busyId === o.id ? 'disabled' : ''} style="margin-top:8px">✅ Fully complete</button>`
@@ -2414,12 +2415,12 @@ function CustomerOrderPage({ token }) {
       : order.order_status === 'PARTIALLY_COMPLETED'
       ? 'Part of your order is ready — please come to the counter.'
       : order.order_status === 'COMPLETED'
-      ? 'Thank you! Enjoy your meal.'
+      ? 'Please come to the counter to pick up your order.'
       : 'Estimated pickup: 10–15 minutes';
 
     const heroTitle = cancelled
       ? '❌ Cancelled'
-      : order.order_status === 'READY'
+      : order.order_status === 'READY' || order.order_status === 'COMPLETED'
       ? '🟢 READY'
       : order.order_status === 'PARTIALLY_COMPLETED'
       ? '🟡 PARTIALLY READY'
@@ -2464,7 +2465,7 @@ function CustomerOrderPage({ token }) {
         <span class="who">${live ? '● live' : '○ connecting…'}</span>
       </div>
 
-      <div class="card status-hero ${order.order_status === 'READY' || order.order_status === 'PARTIALLY_COMPLETED' ? 'READY' : ''}">
+      <div class="card status-hero ${['READY', 'PARTIALLY_COMPLETED', 'COMPLETED'].includes(order.order_status) ? 'READY' : ''}">
         <div class="sub" style="margin:0">Order #${order.order_number}${
       order.customer_name ? ` · ${esc(order.customer_name)}` : ''
     }</div>
