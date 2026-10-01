@@ -48,12 +48,12 @@ app.post(
 app.use(express.json({ limit: '1mb' }));
 
 // ---------- Auth ----------
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body ?? {};
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }
-  const user = row<StaffUser & { password_hash: string }>(
+  const user = await row<StaffUser & { password_hash: string }>(
     `SELECT u.id, u.username, u.role, u.org_id, o.name AS org_name, u.password_hash, u.email, u.phone
      FROM users u LEFT JOIN organizations o ON o.id = u.org_id WHERE u.username = ? COLLATE NOCASE`,
     String(username)
@@ -116,20 +116,20 @@ app.post('/api/auth/signup', async (req, res) => {
   if (!restaurantName) {
     return res.status(400).json({ error: 'Please enter your restaurant or company name.' });
   }
-  if (row('SELECT id FROM users WHERE username = ? COLLATE NOCASE', username)) {
+  if (await row('SELECT id FROM users WHERE username = ? COLLATE NOCASE', username)) {
     return res.status(409).json({ error: 'That username is already taken.' });
   }
-  if (row('SELECT id FROM users WHERE email = ? COLLATE NOCASE', email)) {
+  if (await row('SELECT id FROM users WHERE email = ? COLLATE NOCASE', email)) {
     return res.status(409).json({ error: 'An account with that email already exists.' });
   }
-  const org = run('INSERT INTO organizations (name) VALUES (?)', restaurantName);
+  const org = await run('INSERT INTO organizations (name) VALUES (?)', restaurantName);
   const orgId = Number(org.lastInsertRowid);
-  const loc = run('INSERT INTO locations (org_id, name) VALUES (?, ?)', orgId, 'Main Location');
+  const loc = await run('INSERT INTO locations (org_id, name) VALUES (?, ?)', orgId, 'Main Location');
   const locId = Number(loc.lastInsertRowid);
   for (const name of ['Counter 1', 'Counter 2', 'Counter 3']) {
-    run('INSERT INTO counters (location_id, name) VALUES (?, ?)', locId, name);
+    await run('INSERT INTO counters (location_id, name) VALUES (?, ?)', locId, name);
   }
-  const u = run(
+  const u = await run(
     'INSERT INTO users (username, password_hash, role, org_id, email, phone) VALUES (?, ?, ?, ?, ?, ?)',
     username, hashPassword(password), 'ADMIN', orgId, email, phone || null
   );
@@ -150,13 +150,13 @@ app.post('/api/auth/signup', async (req, res) => {
 });
 
 // Public: live username-availability check for the signup form (case-insensitive).
-app.get('/api/auth/username-available', (req, res) => {
+app.get('/api/auth/username-available', async (req, res) => {
   const username = String(req.query.username ?? '').trim();
   const badName = usernameProblem(username);
   if (badName) {
     return res.json({ available: false, message: badName });
   }
-  const taken = !!row('SELECT id FROM users WHERE username = ? COLLATE NOCASE', username);
+  const taken = !!await row('SELECT id FROM users WHERE username = ? COLLATE NOCASE', username);
   res.json({
     available: !taken,
     message: taken ? 'That username is already taken.' : 'Username available ✓',
@@ -164,8 +164,8 @@ app.get('/api/auth/username-available', (req, res) => {
 });
 
 // Public: the deployment's restaurant name, shown on the login page.
-app.get('/api/public/restaurant-name', (_req, res) => {
-  const org = row<{ name: string }>('SELECT name FROM organizations ORDER BY id LIMIT 1');
+app.get('/api/public/restaurant-name', async (_req, res) => {
+  const org = await row<{ name: string }>('SELECT name FROM organizations ORDER BY id LIMIT 1');
   res.json({ name: org?.name || 'Kitchen Orders' });
 });
 
@@ -187,28 +187,28 @@ app.get('/api/notifications/vapid-key', (_req, res) => {
   res.json({ publicKey: getVapidPublicKey(), enabled: pushEnabled });
 });
 
-app.post('/api/notifications/subscribe', (req, res) => {
+app.post('/api/notifications/subscribe', async (req, res) => {
   const { token, subscription, device_type } = req.body ?? {};
   if (!token || !subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
     return res.status(400).json({ error: 'Invalid subscription' });
   }
-  const order = row<{ id: number }>('SELECT id FROM orders WHERE public_token = ?', token);
+  const order = await row<{ id: number }>('SELECT id FROM orders WHERE public_token = ?', token);
   if (!order) return res.status(404).json({ error: 'Order not found' });
-  saveSubscription(order.id, subscription, device_type);
+  await saveSubscription(order.id, subscription, device_type);
   res.json({ ok: true });
 });
 
 // ---------- Staff reference data ----------
-app.get('/api/menu', requireAuth, (_req, res) => {
-  res.json(all('SELECT id, name, price_cents AS price FROM menu_items WHERE active = 1 ORDER BY name'));
+app.get('/api/menu', requireAuth, async (_req, res) => {
+  res.json(await all('SELECT id, name, price_cents AS price FROM menu_items WHERE active = 1 ORDER BY name'));
 });
 
-app.post('/api/menu', requireAuth, requireRole('ADMIN'), (req: AuthRequest, res) => {
+app.post('/api/menu', requireAuth, requireRole('ADMIN'), async (req: AuthRequest, res) => {
   const { name, price_cents } = req.body ?? {};
   const n = String(name || '').trim().slice(0, 120);
   const p = Math.round(Number(price_cents));
   if (!n || !Number.isFinite(p) || p < 0) return res.status(400).json({ error: 'Invalid item' });
-  const r = run(
+  const r = await run(
     'INSERT INTO menu_items (org_id, name, price_cents) VALUES (?, ?, ?)',
     req.user!.org_id,
     n,
@@ -217,26 +217,26 @@ app.post('/api/menu', requireAuth, requireRole('ADMIN'), (req: AuthRequest, res)
   res.status(201).json({ id: Number(r.lastInsertRowid), name: n, price: p });
 });
 
-app.put('/api/menu/:id', requireAuth, requireRole('ADMIN'), (req: AuthRequest, res) => {
+app.put('/api/menu/:id', requireAuth, requireRole('ADMIN'), async (req: AuthRequest, res) => {
   const { name, price_cents } = req.body ?? {};
   const n = String(name || '').trim().slice(0, 120);
   const pr = Math.round(Number(price_cents));
   if (!n || !Number.isFinite(pr) || pr < 0) return res.status(400).json({ error: 'Invalid item' });
-  const item = row('SELECT id FROM menu_items WHERE id = ?', req.params.id);
+  const item = await row('SELECT id FROM menu_items WHERE id = ?', req.params.id);
   if (!item) return res.status(404).json({ error: 'Menu item not found' });
-  run('UPDATE menu_items SET name = ?, price_cents = ? WHERE id = ?', n, pr, req.params.id);
+  await run('UPDATE menu_items SET name = ?, price_cents = ? WHERE id = ?', n, pr, req.params.id);
   res.json({ id: Number(req.params.id), name: n, price: pr });
 });
 
-app.delete('/api/menu/:id', requireAuth, requireRole('ADMIN'), (req: AuthRequest, res) => {
-  const item = row('SELECT id FROM menu_items WHERE id = ?', req.params.id);
+app.delete('/api/menu/:id', requireAuth, requireRole('ADMIN'), async (req: AuthRequest, res) => {
+  const item = await row('SELECT id FROM menu_items WHERE id = ?', req.params.id);
   if (!item) return res.status(404).json({ error: 'Menu item not found' });
-  run('UPDATE menu_items SET active = 0 WHERE id = ?', req.params.id);
+  await run('UPDATE menu_items SET active = 0 WHERE id = ?', req.params.id);
   res.json({ ok: true });
 });
 
-app.get('/api/counters', requireAuth, (_req, res) => {
-  res.json(all('SELECT id, name FROM counters ORDER BY id'));
+app.get('/api/counters', requireAuth, async (_req, res) => {
+  res.json(await all('SELECT id, name FROM counters ORDER BY id'));
 });
 
 app.use('/api/orders', ordersRouter);
