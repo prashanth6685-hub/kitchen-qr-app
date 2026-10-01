@@ -282,16 +282,21 @@ table.orders tr:hover td { background: #faf3e8; }
 
 /* ---------- main nav pills ---------- */
 .mainnav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.nav-pill {
-  display: inline-block; padding: 9px 18px; border-radius: 999px;
-  font-weight: 700; font-size: 14px; color: #fff !important; text-decoration: none;
-  box-shadow: 0 1px 3px rgba(0,0,0,.22); white-space: nowrap;
+/* Topbar nav: same old-style look as .btn.secondary, sized for the topbar. */
+.nav-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 14px; border-radius: 12px;
+  background: #eef2f7; color: var(--ink); text-decoration: none;
+  font-weight: 700; font-size: 14px; white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0,0,0,.12);
 }
-.nav-pill:active { transform: scale(.96); }
-.nav-orders { background: #2563eb; }
-.nav-new { background: #16a34a; }
-.nav-kitchen { background: #ea580c; }
-.nav-waitlist { background: #9333ea; }
+.nav-btn:hover { background: #e2e8f0; }
+.nav-btn:active { transform: scale(.96); }
+.nav-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
+  background: #dc2626; color: #fff; font-size: 12px; font-weight: 800;
+}
 
 /* ---------- dashboard tabs ---------- */
 .tabs { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }

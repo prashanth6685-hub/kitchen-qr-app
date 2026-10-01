@@ -371,6 +371,8 @@ check("no estimated wait shown to customers", "estimated_wait_label" not in _src
 check("single primary action per waitlist row", "WL_ACTIONS" not in _src and "WL_PRIMARY_ACTION" in _src)
 check("check-in goes straight to tracking", "renderConfirmed" not in _src and "You're checked in" not in _src)
 check("check-in navigates to /wait/<token>", "go(`/wait/${encodeURIComponent(data.public_token)}`)" in _src)
+check("topbar uses old-style nav buttons", "nav-btn" in _src and "nav-pill" not in _src)
+check("waitlist nav has count badge", all(x in _src for x in ("nav-waitlist-count", "nav-badge", "active_count")))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

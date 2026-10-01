@@ -274,10 +274,10 @@ function topBar() {
   <div class="topbar">
     <div class="brand"><span>●</span> ${esc(user.restaurant_name || 'Kitchen Orders')}</div>
     <nav class="mainnav">
-      <a class="nav-pill nav-orders" href="/staff">Orders</a>
-      ${canOrder ? '<a class="nav-pill nav-new" href="/staff/new">New</a>' : ''}
-      <a class="nav-pill nav-kitchen" href="/kitchen">Kitchen</a>
-      <a class="nav-pill nav-waitlist" href="/staff/waitlist">Waitlist</a>
+      <a class="nav-btn" href="/staff">🧾 Orders</a>
+      ${canOrder ? '<a class="nav-btn" href="/staff/new">➕ New</a>' : ''}
+      <a class="nav-btn" href="/kitchen">👨‍🍳 Kitchen</a>
+      <a class="nav-btn" href="/staff/waitlist">📋 Waitlist<span class="nav-badge" id="nav-waitlist-count" style="display:none"></span></a>
       <div class="menu-wrap">
         <button class="user-chip" id="user-chip" aria-haspopup="true">
           <span class="avatar">${initial}</span>
@@ -330,6 +330,21 @@ function wireTopBar() {
       clearSession();
       go('/login');
     });
+  }
+  // Waitlist count badge: total active entries across this org's locations.
+  const wlBadge = document.getElementById('nav-waitlist-count');
+  if (wlBadge) {
+    api('/api/waitlist/admin/locations')
+      .then((locs) => {
+        const n = Array.isArray(locs)
+          ? locs.reduce((s, l) => s + (Number(l.active_count) || 0), 0)
+          : 0;
+        if (n > 0) {
+          wlBadge.textContent = n > 99 ? '99+' : String(n);
+          wlBadge.style.display = '';
+        }
+      })
+      .catch(() => {});
   }
 }
 
