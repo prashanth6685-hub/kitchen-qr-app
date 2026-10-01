@@ -33,14 +33,14 @@ if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) {
 }
 
 // --- Organization / location / counters ---
-let org = row<{ id: number }>('SELECT id FROM organizations LIMIT 1');
+let org = await row<{ id: number }>('SELECT id FROM organizations LIMIT 1');
 if (!org) {
-  const r = run('INSERT INTO organizations (name) VALUES (?)', "Nankana's Kitchen");
+  const r = await run('INSERT INTO organizations (name) VALUES (?)', "Nankana's Kitchen");
   org = { id: Number(r.lastInsertRowid) };
-  const loc = run('INSERT INTO locations (org_id, name) VALUES (?, ?)', org.id, 'Main Location');
+  const loc = await run('INSERT INTO locations (org_id, name) VALUES (?, ?)', org.id, 'Main Location');
   const locId = Number(loc.lastInsertRowid);
   for (const name of ['Counter 1', 'Counter 2', 'Counter 3']) {
-    run('INSERT INTO counters (location_id, name) VALUES (?, ?)', locId, name);
+    await run('INSERT INTO counters (location_id, name) VALUES (?, ?)', locId, name);
   }
   console.log('[seed] created organization, location, and 3 counters');
 }
@@ -54,15 +54,15 @@ const users: [string, string, string][] = [
   ['kitchen', 'kitchen123', 'KITCHEN_STAFF'],
 ];
 for (const [username, password, role] of users) {
-  const existing = row('SELECT id FROM users WHERE username = ?', username);
+  const existing = await row('SELECT id FROM users WHERE username = ?', username);
   if (!existing) {
-    run('INSERT INTO users (username, password_hash, role, org_id) VALUES (?, ?, ?, ?)', username, hashPassword(password), role, org!.id);
+    await run('INSERT INTO users (username, password_hash, role, org_id) VALUES (?, ?, ?, ?)', username, hashPassword(password), role, org!.id);
     console.log(`[seed] created user "${username}" / password "${password}" (${role})`);
   }
 }
 
 // --- Sample menu ---
-const menuCount = row<{ c: number }>('SELECT COUNT(*) AS c FROM menu_items')!.c;
+const menuCount = (await row<{ c: number }>('SELECT COUNT(*) AS c FROM menu_items'))!.c;
 if (menuCount === 0) {
   const items: [string, number][] = [
     ['Chicken Biryani', 1299],
@@ -73,22 +73,22 @@ if (menuCount === 0) {
     ['Masala Chai', 299],
   ];
   for (const [name, price] of items) {
-    run('INSERT INTO menu_items (org_id, name, price_cents) VALUES (?, ?, ?)', org!.id, name, price);
+    await run('INSERT INTO menu_items (org_id, name, price_cents) VALUES (?, ?, ?)', org!.id, name, price);
   }
   console.log('[seed] added sample menu items');
 }
 
 // --- Sample discount codes (only once) ---
-const dcCount = row<{ c: number }>('SELECT COUNT(*) AS c FROM discount_codes')!.c;
+const dcCount = (await row<{ c: number }>('SELECT COUNT(*) AS c FROM discount_codes'))!.c;
 if (dcCount === 0) {
-  const biryani = row<{ id: number }>('SELECT id FROM menu_items WHERE name = ?', 'Chicken Biryani');
+  const biryani = await row<{ id: number }>('SELECT id FROM menu_items WHERE name = ?', 'Chicken Biryani');
   const samples: [string, string, number | null, number | null, number | null][] = [
     // code, label, menu_item_id, amount_cents, percent_off
     ['BIRYANI5', '$5 off Chicken Biryani', biryani?.id ?? null, 500, null],
     ['WELCOME10', '10% off anything', null, null, 10],
   ];
   for (const [code, label, menuItemId, amount, pct] of samples) {
-    run(
+    await run(
       'INSERT INTO discount_codes (code, label, menu_item_id, amount_cents, percent_off) VALUES (?, ?, ?, ?, ?)',
       code, label, menuItemId, amount, pct
     );
