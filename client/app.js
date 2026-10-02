@@ -1648,6 +1648,12 @@ function StaffOrderDetailPage({ id }) {
   let editDirty = false; // unsaved item edits pending
   let codeBusy = false;
   let codeError = null; // discount code error for the single order-level code field
+  let holdAction = null; // HTML: "on hold" banner + New order link after a save
+  let cashTendered = ''; // cashier-typed tendered amount (preserved across renders)
+  let cashConfirm = null; // {tendered, change} cents — pending cash confirm step
+  let cancelConfirm = false; // show the "cancel this transaction?" confirm card
+  let cancelBusy = false;
+  let cancelError = null;
 
   async function load() {
     try {
@@ -1679,7 +1685,7 @@ function StaffOrderDetailPage({ id }) {
     }
   }
 
-  async function pay(kind) {
+  async function pay(kind, cashInfo) {
     busy = true;
     error = null;
     render();
@@ -1694,7 +1700,11 @@ function StaffOrderDetailPage({ id }) {
       }
       const data = await api(`/api/orders/${id}/payments/${kind}`, { method: 'POST' });
       if (data.warning) notice = data.warning;
+      else if (kind === 'cash' && cashInfo)
+        notice = `Cash payment confirmed — change due ${money(cashInfo.change)}.`;
       busy = false;
+      holdAction = null;
+      cashTendered = '';
       await load();
     } catch (e) {
       busy = false;
@@ -1810,7 +1820,7 @@ function StaffOrderDetailPage({ id }) {
         ${canEdit ? `
         <div class="btn-row" style="margin-top:12px;align-items:center">
           <button class="btn" id="edit-save" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : 'Save changes'}</button>
-          <button class="btn secondary" id="edit-cancel">Cancel</button>
+          <button class="btn secondary" id="edit-cancel">Discard</button>
           <span class="sub">New total: <b>${money(Math.max(0, editTotal() - (order.discount_cents || 0)))}</b></span>
         </div>` : ''}`;
   }
@@ -1916,6 +1926,7 @@ function StaffOrderDetailPage({ id }) {
       <h1>Order #${order.order_number}</h1>
       ${error ? `<div class="error">${esc(error)}</div>` : ''}
       <div class="ok" id="detail-notice" style="display:${notice ? 'block' : 'none'}">${esc(notice || '')}</div>
+      ${holdAction ? `<div style="margin-top:8px">${holdAction}</div>` : ''}
 
       <div class="card">
         <div class="btn-row" style="margin-top:0;margin-bottom:12px;align-items:center">
@@ -1931,21 +1942,49 @@ function StaffOrderDetailPage({ id }) {
           ${order.special_instructions ? `<div>Note: ${esc(order.special_instructions)}</div>` : ''}
           <div>Created: ${esc(new Date(order.created_at).toLocaleString())}</div>
         </div>
+        ${isAdmin() && !['CANCELLED', 'COMPLETED'].includes(order.order_status) ? `
+        <div class="btn-row no-print" style="margin-top:10px">
+          <button class="btn danger sm" id="order-cancel">❌ Cancel transaction</button>
+        </div>` : ''}
       </div>
+
+      ${cancelConfirm ? `
+      <div class="card no-print" style="text-align:center">
+        <h2>Cancel this transaction?</h2>
+        <p class="sub">Order #${order.order_number} (${money(order.total_cents)}) will be voided and moved to Cancelled.</p>
+        ${cancelError ? `<div class="error">${esc(cancelError)}</div>` : ''}
+        <div class="btn-row">
+          <button class="btn danger" id="order-cancel-yes" ${cancelBusy ? 'disabled' : ''}>${cancelBusy ? 'Cancelling…' : 'YES, CANCEL'}</button>
+          <button class="btn secondary" id="order-cancel-no">NO, GO BACK</button>
+        </div>
+      </div>` : ''}
 
       ${discountCardHTML()}
 
-      ${
-        !paid
+      ${order.order_status === 'CANCELLED'
+        ? `<div class="card"><div class="info">❌ This transaction was cancelled — no payment was taken.</div></div>`
+        : !paid
           ? `
       <div class="card">
         <h2>Take payment</h2>
         <p class="sub">The QR code is generated only after payment is confirmed.</p>
         <div class="btn-row">
           <button class="btn" id="pay-stripe" ${busy ? 'disabled' : ''}>💳 Card (Stripe)</button>
-          <button class="btn secondary" id="pay-cash" ${busy ? 'disabled' : ''}>💵 Cash received</button>
           <button class="btn warn" id="pay-demo" ${busy ? 'disabled' : ''}>🧪 Demo card payment</button>
         </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+          <label class="sub" for="cash-tendered">Cash tendered&nbsp;$</label>
+          <input id="cash-tendered" inputmode="decimal" placeholder="0.00" value="${esc(cashTendered)}" style="max-width:90px" />
+          <button class="btn secondary" id="pay-cash" ${busy ? 'disabled' : ''}>💵 Cash received</button>
+        </div>
+        ${cashConfirm ? `
+        <div class="ok" style="margin-top:8px">
+          Tendered <b>${money(cashConfirm.tendered)}</b> · Total ${money(order.total_cents)} · <b>Change due ${money(cashConfirm.change)}</b>
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn" id="cash-confirm-yes" ${busy ? 'disabled' : ''}>Confirm cash payment</button>
+            <button class="btn secondary" id="cash-confirm-no">Back</button>
+          </div>
+        </div>` : ''}
         <p class="sub" style="margin:10px 0 0">
           Card payments via Stripe Checkout open automatically when Stripe keys are configured. Demo payments are
           for testing only and must be disabled in production (DEMO_PAYMENTS=false).
@@ -1984,8 +2023,81 @@ function StaffOrderDetailPage({ id }) {
 
     const stripeBtn = document.getElementById('pay-stripe');
     if (stripeBtn) stripeBtn.addEventListener('click', () => pay('stripe'));
+    const cashInput = document.getElementById('cash-tendered');
+    if (cashInput)
+      cashInput.addEventListener('input', () => {
+        cashTendered = cashInput.value;
+      });
     const cashBtn = document.getElementById('pay-cash');
-    if (cashBtn) cashBtn.addEventListener('click', () => pay('cash'));
+    if (cashBtn)
+      cashBtn.addEventListener('click', () => {
+        const raw = ((document.getElementById('cash-tendered') || {}).value || '').trim();
+        const v = Math.round(Number(raw) * 100);
+        if (!Number.isFinite(v) || v <= 0) {
+          showNotice('Enter the cash amount received.');
+          return;
+        }
+        const total = order.total_cents;
+        if (v < total) {
+          showNotice(`Tendered ${money(v)} is short of the ${money(total)} total by ${money(total - v)}.`);
+          return;
+        }
+        cashTendered = raw;
+        cashConfirm = { tendered: v, change: v - total };
+        notice = null;
+        render();
+      });
+    const cashYes = document.getElementById('cash-confirm-yes');
+    if (cashYes)
+      cashYes.addEventListener('click', () => {
+        const c = cashConfirm;
+        cashConfirm = null;
+        pay('cash', c);
+      });
+    const cashNo = document.getElementById('cash-confirm-no');
+    if (cashNo)
+      cashNo.addEventListener('click', () => {
+        cashConfirm = null;
+        render();
+      });
+    // --- cancel transaction (admin): void the order, move to Cancelled ---
+    const txnCancelBtn = document.getElementById('order-cancel');
+    if (txnCancelBtn)
+      txnCancelBtn.addEventListener('click', () => {
+        cancelConfirm = true;
+        cancelError = null;
+        render();
+      });
+    const txnCancelYes = document.getElementById('order-cancel-yes');
+    if (txnCancelYes)
+      txnCancelYes.addEventListener('click', async () => {
+        cancelBusy = true;
+        cancelError = null;
+        render();
+        try {
+          await api(`/api/orders/${order.id}/status`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: 'CANCELLED' }),
+          });
+          cancelBusy = false;
+          cancelConfirm = false;
+          holdAction = null;
+          cashConfirm = null;
+          showNotice('Transaction cancelled.');
+          await load();
+        } catch (e) {
+          cancelBusy = false;
+          cancelError = e.message;
+          render();
+        }
+      });
+    const txnCancelNo = document.getElementById('order-cancel-no');
+    if (txnCancelNo)
+      txnCancelNo.addEventListener('click', () => {
+        cancelConfirm = false;
+        cancelError = null;
+        render();
+      });
     const demoBtn = document.getElementById('pay-demo');
     if (demoBtn) demoBtn.addEventListener('click', () => pay('demo'));
     const printBtn = document.getElementById('qr-print');
@@ -2105,7 +2217,16 @@ function StaffOrderDetailPage({ id }) {
             body: JSON.stringify({ special_instructions: notesVal }),
           });
           busy = false;
-          showNotice('Order updated.');
+          if (order.payment_status === 'PAID') {
+            showNotice('Order updated.');
+            holdAction = null;
+          } else {
+            // Save = park the order as a pending-payment hold. Payment stays
+            // a separate step, so staff can serve the next customer now and
+            // take payment for this order later.
+            showNotice('Order saved — payment pending (on hold).');
+            holdAction = `<a class="btn secondary sm" href="/staff/new" style="margin-right:8px">➕ New order</a><span class="sub">start the next customer — this order stays on hold until you take payment.</span>`;
+          }
           await load();
         } catch (e) {
           busy = false;
