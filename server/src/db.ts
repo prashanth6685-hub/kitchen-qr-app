@@ -109,7 +109,12 @@ export function now(): string {
 async function execScript(script: string) {
   for (const chunk of script.split(';')) {
     const stmt = chunk.trim();
-    if (stmt) await client.execute(stmt);
+    if (!stmt) continue;
+    // Turso remote rejects state-changing PRAGMAs (e.g. journal_mode = WAL,
+    // which ships in schema.sql); they only matter for the local-file
+    // backend, so skip them on remote connections.
+    if (isRemote && /^pragma\b/i.test(stmt)) continue;
+    await client.execute(stmt);
   }
 }
 
