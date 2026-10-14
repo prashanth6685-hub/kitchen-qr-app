@@ -454,7 +454,7 @@ check("check-in goes straight to tracking", "renderConfirmed" not in _src and "Y
 check("check-in navigates to /wait/<token>", "go(`/wait/${encodeURIComponent(data.public_token)}`)" in _src)
 check("topbar uses old-style nav buttons", "nav-btn" in _src and "nav-pill" not in _src)
 check("waitlist nav has count badge", all(x in _src for x in ("nav-waitlist-count", "nav-badge", "active_count")))
-check("temp quick test login is gated", "quick-login-btn" in _src and "get('test') === '1'" in _src)
+check("temp quick test login removed", "quick-login-btn" not in _src and "admin123" not in _src and "get('test') === '1'" not in _src, "test-login backdoor still present")
 check("username rule is min 5 only", "Min 5 characters (letters, numbers, . _ -)." in _src and "or 4 characters" not in _src)
 check("CALLED rows have CALL AGAIN button", 'data-act="recall"' in _src and "CALL AGAIN" in _src)
 check("customer texts don't promise almost-ready push", "your table is almost ready" not in _src.lower())

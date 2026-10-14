@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { row, all, run } from './db.js';
 import {
   verifyPassword,
@@ -76,6 +77,25 @@ app.post('/api/auth/login', async (req, res) => {
   });
 });
 
+// ---------- Invite-code gate on public signup ----------
+// When SIGNUP_INVITE_CODE is set and non-empty, POST /api/auth/signup
+// requires a matching body.invite_code (timing-safe compare). When unset or
+// empty, signup behaves exactly as before (backward compatible).
+const SIGNUP_INVITE_CODE = (process.env.SIGNUP_INVITE_CODE || '').trim();
+
+function inviteCodeOk(provided: unknown): boolean {
+  if (!SIGNUP_INVITE_CODE) return true; // gate off
+  // Hash both sides first so timingSafeEqual never sees a length oracle.
+  const expected = createHash('sha256').update(SIGNUP_INVITE_CODE, 'utf8').digest();
+  const given = createHash('sha256').update(String(provided ?? ''), 'utf8').digest();
+  return expected.length === given.length && timingSafeEqual(expected, given);
+}
+
+// Public: lets the signup form know whether an invite code is required.
+app.get('/api/public/signup-gated', (_req, res) => {
+  res.json({ gated: SIGNUP_INVITE_CODE.length > 0 });
+});
+
 // Public signup: creates a restaurant (organization) with a default location
 // and counters, plus an ADMIN account that gets full functionality.
 // Username rule: at least 5 characters, or 4 characters including a number.
@@ -89,6 +109,9 @@ function usernameProblem(username: string): string | null {
 }
 const PHONE_RE = /^[+()\-.\s\d]{7,25}$/;
 app.post('/api/auth/signup', async (req, res) => {
+  if (!inviteCodeOk(req.body?.invite_code)) {
+    return res.status(403).json({ error: 'A valid invite code is required to create an account.' });
+  }
   const username = String(req.body?.username ?? '').trim();
   const password = String(req.body?.password ?? '');
   const email = String(req.body?.email ?? '').trim().toLowerCase();

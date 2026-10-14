@@ -27,6 +27,8 @@ function getUser() {
 function saveSession(token, user) {
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
+  idleLastActivity = Date.now();
+  scheduleIdleWarn(); // (re)start the idle-timeout clock for the new session
 }
 function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
@@ -421,6 +423,10 @@ function LoginPage() {
           <span>Restaurant / company name</span>
           <input id="su-restaurant" autocomplete="organization" placeholder="e.g. Nankana's Kitchen" />
         </label>
+        <label class="field" id="su-invite-wrap" style="display:none">
+          <span>Invite code</span>
+          <input id="su-invite" autocomplete="off" placeholder="Required — ask the owner" />
+        </label>
         <button class="btn block" id="signup-btn" type="submit">Create account</button>
         <p class="sub" style="text-align:center">Already have an account? <a class="link" href="#" id="show-login">Log in</a></p>
       </form>
@@ -495,6 +501,15 @@ function LoginPage() {
   });
 
   const loginBtn = document.getElementById('login-btn');
+
+  // Invite-code gate: only show the invite-code field when the server has it on.
+  const inviteWrap = document.getElementById('su-invite-wrap');
+  fetch('/api/public/signup-gated')
+    .then((r) => r.json())
+    .then((d) => {
+      if (d && d.gated) inviteWrap.style.display = '';
+    })
+    .catch(() => {});
   loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     loginBtn.disabled = true;
@@ -517,35 +532,6 @@ function LoginPage() {
     }
   });
 
-  // TEMPORARY testing shortcut (remove when testing is done): visiting
-  // /login?test=1 shows a one-tap admin login so testing doesn't need
-  // typing credentials every time. Hidden on the normal login page.
-  if (new URLSearchParams(location.search).get('test') === '1') {
-    const q = document.createElement('button');
-    q.className = 'btn secondary block';
-    q.id = 'quick-login-btn';
-    q.style.marginTop = '10px';
-    q.textContent = '⚡ Quick test login (admin)';
-    loginForm.after(q);
-    q.addEventListener('click', async () => {
-      q.disabled = true;
-      q.innerHTML = '<span class="spinner"></span> Signing in…';
-      hideErr();
-      try {
-        const data = await api('/api/auth/login', {
-          method: 'POST',
-          body: JSON.stringify({ username: 'admin', password: 'admin123' }),
-        });
-        saveSession(data.token, data.user);
-        go('/staff');
-      } catch (err) {
-        showErr(err.message);
-        q.disabled = false;
-        q.textContent = '⚡ Quick test login (admin)';
-      }
-    });
-  }
-
   const signupBtn = document.getElementById('signup-btn');
   signupForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -561,12 +547,19 @@ function LoginPage() {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return showErr('Please enter a valid email address.');
     if (phone && !/^[+()\-.\s\d]{7,25}$/.test(phone)) return showErr('Please enter a valid phone number.');
     if (!restaurantName) return showErr('Please enter your restaurant or company name.');
+    const signupBody = { username, password, email, phone, restaurant_name: restaurantName };
+    // Only required when the server has the invite-code gate on.
+    if (inviteWrap.style.display !== 'none') {
+      const inviteCode = document.getElementById('su-invite').value.trim();
+      if (!inviteCode) return showErr('An invite code is required to create an account.');
+      signupBody.invite_code = inviteCode;
+    }
     signupBtn.disabled = true;
     signupBtn.innerHTML = '<span class="spinner"></span> Creating account…';
     try {
       const data = await api('/api/auth/signup', {
         method: 'POST',
-        body: JSON.stringify({ username, password, email, phone, restaurant_name: restaurantName }),
+        body: JSON.stringify(signupBody),
       });
       saveSession(data.token, data.user);
       go('/staff');
@@ -3661,6 +3654,112 @@ function StaffWaitlistPage() {
   };
 }
 
+/* ============================== idle session timeout ============================== */
+// Staff sessions auto-log out after 10 minutes of inactivity. At 10 minutes a
+// modal appears with a live 60-second countdown: [Continue] (or any activity
+// while the modal is open) keeps the session; [Log out] — or the countdown
+// reaching zero — clears the session and goes to /login. Only active while a
+// staff token exists; customer pages without a token are untouched.
+
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+const IDLE_COUNTDOWN_S = 60;
+
+let idleLastActivity = Date.now();
+let idleWarnTimer = null;
+let idleCountdownTimer = null;
+let idleModalOpen = false;
+
+function idleLogout() {
+  closeIdleModal();
+  clearSession();
+  go('/login');
+}
+
+function closeIdleModal() {
+  idleModalOpen = false;
+  if (idleWarnTimer) {
+    clearTimeout(idleWarnTimer);
+    idleWarnTimer = null;
+  }
+  if (idleCountdownTimer) {
+    clearInterval(idleCountdownTimer);
+    idleCountdownTimer = null;
+  }
+  const el = document.getElementById('idle-timeout-overlay');
+  if (el) el.remove();
+}
+
+function openIdleModal() {
+  if (idleModalOpen || !getToken()) return;
+  idleModalOpen = true;
+  let remaining = IDLE_COUNTDOWN_S;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'idle-timeout-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <h2>You've been idle for 10 minutes</h2>
+      <p class="sub">You'll be logged out in <strong id="idle-countdown">${remaining}</strong> seconds.</p>
+      <div class="btn-row" style="justify-content:center;margin-top:12px">
+        <button class="btn" id="idle-continue">Continue</button>
+        <button class="btn secondary" id="idle-logout">Log out</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('idle-continue').addEventListener('click', idleActivity);
+  document.getElementById('idle-logout').addEventListener('click', idleLogout);
+  idleCountdownTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      idleLogout();
+      return;
+    }
+    const n = document.getElementById('idle-countdown');
+    if (n) n.textContent = String(remaining);
+  }, 1000);
+}
+
+function scheduleIdleWarn() {
+  if (idleWarnTimer) {
+    clearTimeout(idleWarnTimer);
+    idleWarnTimer = null;
+  }
+  if (!getToken()) return;
+  const delay = IDLE_TIMEOUT_MS - (Date.now() - idleLastActivity);
+  if (delay <= 0) {
+    openIdleModal();
+    return;
+  }
+  idleWarnTimer = setTimeout(openIdleModal, delay);
+}
+
+function idleActivity() {
+  if (!getToken()) {
+    closeIdleModal();
+    return;
+  }
+  idleLastActivity = Date.now();
+  if (idleModalOpen) closeIdleModal(); // any activity dismisses the modal
+  scheduleIdleWarn();
+}
+
+function initIdleTimeout() {
+  let lastMouseMove = 0;
+  const onMouseMove = () => {
+    const now = Date.now();
+    if (now - lastMouseMove < 1000) return; // throttle to <= 1/sec
+    lastMouseMove = now;
+    idleActivity();
+  };
+  ['click', 'keydown', 'touchstart'].forEach((ev) =>
+    document.addEventListener(ev, idleActivity, { passive: true })
+  );
+  document.addEventListener('scroll', idleActivity, { passive: true, capture: true });
+  document.addEventListener('mousemove', onMouseMove, { passive: true });
+  scheduleIdleWarn();
+}
+
 /* ============================== boot ============================== */
 
+initIdleTimeout();
 render();
